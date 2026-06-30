@@ -67,7 +67,9 @@ function autoRecordOnFormSubmit(e) {
     if (!targetSheet) throw new Error(`シート「${CONFIG_FOR_CHECKLIST.TARGET_SHEET_NAME}」が見つかりません。`);
 
     const firstEmptyRow = findFirstEmptyRowForChecklist(targetSheet, 2, CONFIG_FOR_CHECKLIST.START_ROW);
-    const dataToWrite = createRowDataForChecklist(formType, namedValues, currentSs);
+    
+    // ★修正: targetSheet を第4引数として渡す
+    const dataToWrite = createRowDataForChecklist(formType, namedValues, currentSs, targetSheet);
     writeDataToRowForChecklist(targetSheet, firstEmptyRow, dataToWrite);
 
   } catch (error) {
@@ -88,9 +90,9 @@ function findFirstEmptyRowForChecklist(sheet, col, startRow) {
 
 /**
  * フォームのタイプに応じて書き込むデータを作成する関数
- * ★修正：不採用報告時は U(勤務日), V(拠点), Y(エリア) を記載しない
+ * ★修正: 「採用可否」列を動的に探し、不採用理由に応じたプルダウン連携を追加
  */
-function createRowDataForChecklist(formType, values, currentSs) {
+function createRowDataForChecklist(formType, values, currentSs, targetSheet) {
   let data = {};
   const today = new Date();
 
@@ -99,9 +101,12 @@ function createRowDataForChecklist(formType, values, currentSs) {
   data['BB'] = Utilities.formatDate(today, 'JST', 'yyyy/MM/dd');
   data['BC'] = Utilities.formatDate(today, 'JST', 'yyyy/MM');
   
+  // ★追加：ターゲットシートから「採用可否」の列を動的に取得する（見つからなければデフォルトC列）
+  const saiyoKahiCol = getColumnLetterByHeader(targetSheet, '採用可否') || 'C'; 
+  
   // === 1. 採用報告 ===
   if (formType === '採用報告') {
-    data['C'] = '採用';
+    data[saiyoKahiCol] = '採用';
     data['D'] = 'スポット';
     data['E'] = getValueForChecklist(values, '紹介会社');
     const shinryoka = getValueForChecklist(values, '診療科');
@@ -120,7 +125,20 @@ function createRowDataForChecklist(formType, values, currentSs) {
 
   // === 2. 不採用報告 (修正済み) ===
   } else if (formType === '不採用報告') {
-    data['C'] = ''; // C列は空欄
+    // ★修正：フォームの「【不採用理由】」を取得し、プルダウン用の値に変換
+    const reason = getValueForChecklist(values, '【不採用理由】');
+    let mappedStatus = '';
+    
+    if (reason === '基準に満たない') {
+      mappedStatus = '不採用（基準未達）';
+    } else if (reason === 'クレーム歴') {
+      mappedStatus = '不採用（ネガティブあり）';
+    } else if (reason === '充足') {
+      mappedStatus = '不採用（充足のため）';
+    }
+
+    data[saiyoKahiCol] = mappedStatus; // 動的に見つけた列に変換後のステータスをセット
+    
     data['D'] = 'スポット';
     data['E'] = getValueForChecklist(values, '紹介会社');
     const shinryoka = getValueForChecklist(values, '診療科');
@@ -133,7 +151,7 @@ function createRowDataForChecklist(formType, values, currentSs) {
 
   // === 3. DS承認報告 ===
   } else if (formType === 'DS承認報告') {
-    data['C'] = '採用';
+    data[saiyoKahiCol] = '採用';
     data['D'] = 'スポット';
     data['E'] = '直接DS応募';
     data['F'] = Utilities.formatDate(today, 'JST', 'yyyy/MM/dd');
@@ -147,7 +165,7 @@ function createRowDataForChecklist(formType, values, currentSs) {
     if (urlSheet) {
         const submitterName = urlSheet.getRange(CONFIG_FOR_CHECKLIST.SUBMITTER_CELL).getValue();
         if (submitterName) {
-            const surname = submitterName.split(/[\s　]/)[0];
+            const surname = submitterName.split(/[\s ]/)[0];
             data['AI'] = `${Utilities.formatDate(today, 'JST', 'M/d')}${surname}`;
         }
     }
@@ -161,4 +179,39 @@ function writeDataToRowForChecklist(sheet, row, data) {
       sheet.getRange(`${colStr}${row}`).setValue(data[colStr]);
     }
   }
+}
+
+/**
+ * ---------------------------------------------------------
+ * ▼▼▼ 以下2つは動的列検索用の新規ヘルパー関数です ▼▼▼
+ * ---------------------------------------------------------
+ */
+
+/**
+ * シートの1〜3行目を検索し、指定したヘッダー名の列アルファベットを動的に返す
+ */
+function getColumnLetterByHeader(sheet, headerName) {
+  if (!sheet) return null;
+  const headers = sheet.getRange(1, 1, 3, sheet.getLastColumn()).getValues();
+  for (let r = 0; r < headers.length; r++) {
+    for (let c = 0; c < headers[r].length; c++) {
+      if (headers[r][c] === headerName) {
+        return convertColIndexToLetter_internal(c + 1);
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * 列番号(例: 3)をアルファベット(例: C)に変換する
+ */
+function convertColIndexToLetter_internal(column) {
+  let temp, letter = '';
+  while (column > 0) {
+    temp = (column - 1) % 26;
+    letter = String.fromCharCode(temp + 65) + letter;
+    column = (column - temp - 1) / 26;
+  }
+  return letter;
 }
