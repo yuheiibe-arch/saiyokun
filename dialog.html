@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <base target="_top">
+    <link rel="stylesheet" href="https://ssl.gstatic.com/docs/script/css/add-ons1.css">
+    <style>
+      html, body { height: 100%; margin: 0; padding: 0; }
+      #dialog-container { display: flex; flex-direction: column; height: 100%; padding: 15px; box-sizing: border-box; }
+      .content { flex: 1; overflow-y: auto; padding-right: 5px; }
+      .button-bar { flex-shrink: 0; text-align: right; padding-top: 15px; border-top: 1px solid #eee; }
+      fieldset { margin: 0 0 15px 0; border: 1px solid #ccc; border-radius: 4px; }
+      label { display: block; margin: 5px 0; }
+      .disabled { color: #999; cursor: not-allowed; }
+      #optional-container { display: none; }
+      .optional-item { display: flex; align-items: center; margin: 5px 0; }
+      .optional-item span { margin: 0 10px; min-width: 150px; }
+    </style>
+  </head>
+  <body>
+    <div id="dialog-container">
+      <div class="content">
+        <h4>宛先の最終確認と追加</h4>
+        <fieldset>
+          <legend>メイン (To)</legend>
+          <? for(let p of mainList) { ?>
+            <label class="<?= p.disabled ? 'disabled' : '' ?>">
+              <input type="checkbox" name="main" value="<?= p.tag ?>" <?= p.checked ? 'checked' : '' ?> <?= p.disabled ? 'disabled' : '' ?>>
+              <?= p.name ?>
+            </label>
+          <? } ?>
+        </fieldset>
+        <fieldset>
+          <legend>CC</legend>
+          <? for(let p of ccList) { ?>
+            <label>
+              <input type="checkbox" name="cc" value="<?= p.tag ?>" <?= p.checked ? 'checked' : '' ?>>
+              <?= p.name ?>
+            </label>
+          <? } ?>
+        </fieldset>
+        <button id="toggleOptionalBtn" class="blue">任意選択者を追加する ▼</button>
+        <fieldset id="optional-container">
+          <legend>任意選択</legend>
+          <? if (optionalList && optionalList.length > 0) { ?>
+            <? for(let p of optionalList) { ?>
+              <div class="optional-item">
+                <input type="checkbox" name="optional_check" data-tag="<?= p.tag ?>">
+                <span><?= p.name ?></span>
+                <input type="radio" id="to_<?= p.tag ?>" name="type_<?= p.tag.replace(/\W/g, '') ?>" value="main" checked> <label for="to_<?= p.tag ?>">To</label>
+                <input type="radio" id="cc_<?= p.tag ?>" name="type_<?= p.tag.replace(/\W/g, '') ?>" value="cc"> <label for="cc_<?= p.tag ?>">CC</label>
+              </div>
+            <? } ?>
+          <? } else { ?>
+            <div>（選択可能な担当者なし）</div>
+          <? } ?>
+        </fieldset>
+      </div>
+      <div class="button-bar">
+        <button class="action" id="submitBtn">投稿</button>
+        <button onclick="google.script.host.close()">キャンセル</button>
+      </div>
+    </div>
+    
+    <script>
+      // 「任意選択者を追加」ボタンのクリックイベント
+      document.getElementById('toggleOptionalBtn').addEventListener('click', function() {
+        const container = document.getElementById('optional-container');
+        if (container.style.display === 'none' || container.style.display === '') {
+          container.style.display = 'block';
+          this.textContent = '任意選択者を隠す ▲';
+        } else {
+          container.style.display = 'none';
+          this.textContent = '任意選択者を追加する ▼';
+        }
+      });
+
+      // 「投稿」ボタンのクリックイベント
+      document.getElementById('submitBtn').addEventListener('click', function() {
+        this.textContent = "処理中...";
+        this.disabled = true;
+
+        const mainRecipients = Array.from(document.querySelectorAll('input[name="main"]:checked')).map(cb => cb.value);
+        const ccRecipients = Array.from(document.querySelectorAll('input[name="cc"]:checked')).map(cb => cb.value);
+        
+        document.querySelectorAll('input[name="optional_check"]:checked').forEach(checkbox => {
+          const tag = checkbox.dataset.tag;
+          const type = document.querySelector(`input[name="type_${tag.replace(/\W/g, '')}"]:checked`).value;
+          if (type === 'main') {
+            mainRecipients.push(tag);
+          } else {
+            ccRecipients.push(tag);
+          }
+        });
+        
+        const postData = {
+          mainList: mainRecipients,
+          ccList: ccRecipients
+        };
+        
+        google.script.run
+          .withSuccessHandler(() => google.script.host.close())
+          .withFailureHandler(err => {
+            alert(err);
+            google.script.host.close();
+          })
+          .executeActualPost(postData);
+      });
+    </script>
+  </body>
+</html>
