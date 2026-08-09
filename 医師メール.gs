@@ -225,6 +225,7 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('mynavi.jp') ||           
       fromLower.includes('mediwel.net') ||           
       fromLower.includes('prima-support-service.com') ||
+     fromLower.includes('mnys.jp') ||
       fromLower.includes('jitsugenya.biz') ||
       fromLower.includes('asiantms.com') || // ★新規追加：ATMSからのメールを除外
       fromLower.includes('nexway.co.jp') 

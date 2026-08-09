@@ -171,7 +171,7 @@ function checkTimegaiCallWithLabel_internal() {
 /**
  * ★★★【新規】大司令塔から呼び出される内部関数 ★★★
  * 非定型キャンセル（ドタキャン）メールを検知して通知する
- * (★ asiantms.com および mediwel.net を除外対象に追加 ★)
+ * (★ nicho.co.jp など除外対象を追加 ★)
  */
 function checkInformalCancel_internal() {
   // ★★★ ロック処理は「大司令塔」が担当 ★★★
@@ -234,6 +234,7 @@ function checkInformalCancel_internal() {
     'gemini-notes@google.com', 
     'asiantms.com', // ★追加：ATMS
     'mediwel.net',  // ★追加：メディウェル
+    'nicho.co.jp',  // ★追加：日本調剤
     userEmail
   ];
 

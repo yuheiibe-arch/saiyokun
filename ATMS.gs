@@ -15,8 +15,8 @@ function checkAtmsEmails_internal() {
     if (stored) processedIds = JSON.parse(stored);
   } catch(e) {}
 
-  // 過去1日分の指定アドレス宛メールを検索（ラベル除外をなくし、スレッドの更新を確実に拾う）
-  const query = `from:assist@asiantms.com to:yuhei.ibe@caps365.jp newer_than:1d`;
+  // ★ここを修正：yuhei.ibe@... と doctor-support@... の両方を対象（OR条件）にする
+  const query = `from:assist@asiantms.com (to:yuhei.ibe@caps365.jp OR to:doctor-support@caps365.jp) newer_than:1d`;
   const threads = GmailApp.search(query);
 
   if (threads.length === 0) {
