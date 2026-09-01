@@ -18,12 +18,12 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
       const body = message.getPlainBody();
       const receivedDate = message.getDate();
       
-      const dateLine = extract(body, /勤務日[\s　]*[:：][\s　]*(.+)/);
-      const doctorName = extract(body, /お名前\(漢字\)[\s　]*[:：][\s　]*(.+)/).replace(/[\s　]/g, '');
-      let department = extract(body, /募集科目[\s　]*[:：][\s　]*(.+)/);
+      const dateLine = extract(body, /勤務日[\s ]*[:：][\s ]*(.+)/);
+      const doctorName = extract(body, /お名前\(漢字\)[\s ]*[:：][\s ]*(.+)/).replace(/[\s ]/g, '');
+      let department = extract(body, /募集科目[\s ]*[:：][\s ]*(.+)/);
       if (!department) department = findDepartmentFromHistory(ss, doctorName) || '';
       
-      const id = extract(body, /(?:求人番号|案件ID|求人ID)[\s　]*[:：][\s　]*([A-Za-z0-9\-]+)/);
+      const id = extract(body, /(?:求人番号|案件ID|求人ID)[\s ]*[:：][\s ]*([A-Za-z0-9\-]+)/);
       const clinic = extract(body, /キャップスクリニック([^\r\n]+)/).replace(/様$/, '').trim();
       const workTime = extract(dateLine, /(\d{1,2}:\d{2}\s*[～~〜\-]\s*\d{1,2}:\d{2})/);
 
@@ -61,8 +61,8 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
         
         if (!type) return;
 
-        const jobId = extract(body, /(?:求人番号|案件ID|求人ID)[\s　]*[:：][\s　]*([A-Za-z0-9\-]+)/);
-        const doctorNameMatch = extract(body, /お名前\(漢字\)[\s　]*[:：][\s　]*(.+)/) || extract(subject, /\[(.+?)医師\]/);
+        const jobId = extract(body, /(?:求人番号|案件ID|求人ID)[\s ]*[:：][\s ]*([A-Za-z0-9\-]+)/);
+        const doctorNameMatch = extract(body, /お名前\(漢字\)[\s ]*[:：][\s ]*(.+)/) || extract(subject, /\[(.+?)医師\]/);
         const nameToFind = doctorNameMatch ? doctorNameMatch.replace(/\s/g, '') : '';
         
         let rowNum = -1;
@@ -84,9 +84,11 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
         if (rowNum !== -1) {
             let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
             values[8] = type; values[9] = status; values[11] = new Date();
-            archiveSheet.appendRow(values);
-            archiveSheet.getRange(archiveSheet.getLastRow(), 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
+            
+            // ★変更: エムステージの確定・キャンセルも「採用可否」を自動付与して転記
+            appendRowToArchive(sheet, archiveSheet, values, type === '確定' ? '採用' : '不採用');
             safeDeleteRow(sheet, rowNum);
+            
             threadProcessed = true;
         }
       });
@@ -183,8 +185,8 @@ function processMRT_Application(querySuffix, processedLabel) {
         values[9] = 'キャンセル済み'; 
         values[11] = new Date();
         
-        archiveSheet.appendRow(values);
-        archiveSheet.getRange(archiveSheet.getLastRow(), 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
+        // ★変更: MRTの自動キャンセル検知時も「不採用」としてアーカイブへ転記
+        appendRowToArchive(sheet, archiveSheet, values, '不採用');
         safeDeleteRow(sheet, rowNum);
         
         threadProcessed = true;
@@ -211,13 +213,13 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
       const body = message.getPlainBody();
       const receivedDate = message.getDate();
       
-      const doctorName = extract(body, /医師名[\s　]*[:：][\s　]*(.+)/).replace(/\s/g, '');
-      let department = extract(body, /診療科目[\s　]*[:：][\s　]*(.+)/);
+      const doctorName = extract(body, /医師名[\s ]*[:：][\s ]*(.+)/).replace(/\s/g, '');
+      let department = extract(body, /診療科目[\s ]*[:：][\s ]*(.+)/);
       if (!department) department = findDepartmentFromHistory(ss, doctorName) || '';
       
-      const id = extract(body, /(?:求人ID|求人番号|案件番号)[\s　]*[:：][\s　]*(.+)/);
-      const dateLine = extract(body, /勤務日程[\s　]*[:：][\s　]*(.+)/);
-      const timeLine = extract(body, /勤務時間[\s　]*[:：][\s　]*(.+)/);
+      const id = extract(body, /(?:求人ID|求人番号|案件番号)[\s ]*[:：][\s ]*(.+)/);
+      const dateLine = extract(body, /勤務日程[\s ]*[:：][\s ]*(.+)/);
+      const timeLine = extract(body, /勤務時間[\s ]*[:：][\s ]*(.+)/);
       const clinic = extract(body, /^キャップスクリニック([^\r\n]+)/m).replace(/様$/, '').trim();
 
       if (doctorName && dateLine) {

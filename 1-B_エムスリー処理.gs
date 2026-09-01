@@ -11,7 +11,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   
   // === 1. 応募通知の処理 ===
   GmailApp.search(`from:(career_spot@m3career.com) subject:("ご勤務希望がありました") ${querySuffix}`).forEach(thread => {
-    // ★修正: スレッドごとのラベルスキップを廃止。中身を1通ずつ確実にチェック
     let threadProcessed = false;
     
     thread.getMessages().forEach(message => {
@@ -55,7 +54,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   // === 2. 確定・お断り通知の処理 ===
   const m3ConfirmQuery = `from:(career_spot@m3career.com) subject:("勤務を確定" OR "勤務が確定" OR "勤務確定" OR "をお断り") ${confirmQuerySuffix}`;
   GmailApp.search(m3ConfirmQuery).forEach(thread => {
-      // ★修正: スレッドごとのラベルスキップを廃止。中身を1通ずつ確実にチェック
       let threadProcessed = false;
 
       const messages = thread.getMessages();
@@ -80,7 +78,7 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         const jobIdMatch = body.match(/求人票.*?([CＣ]\d+)/) || subject.match(/([CＣ]\d+)/);
         const mailJobId = jobIdMatch ? jobIdMatch[1].trim() : extract(body, /([CＣ]\d+)/);
         
-        if (!mailJobId) return; // ★IDが取得できなければ安全のため処理しない
+        if (!mailJobId) return; 
 
         const dateMatch = body.match(/求人票\s*(\d{4}年\d{1,2}月\d{1,2}日)/) || subject.match(/(\d{4}年\d{1,2}月\d{1,2}日)/);
         let mailDateStr = '';
@@ -137,7 +135,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 
             const rowJobId = String(sheetData[i][5]).trim();
 
-            // ★危険な曖昧検索を排除し、IDの完全一致のみで照合
             if (rowJobId === mailJobId) {
                 rowNum = i + 1;
                 break;
@@ -153,8 +150,9 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
             if (!values[3] && fetchedClinic) values[3] = fetchedClinic;
 
             values[8] = type; values[9] = status; values[11] = new Date();
-            archiveSheet.appendRow(values);
-            archiveSheet.getRange(archiveSheet.getLastRow(), 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
+            
+            // ★変更: ヘルパー関数を使って採用可否ステータスを自動付与してアーカイブ
+            appendRowToArchive(sheet, archiveSheet, values, type === '確定' ? '採用' : '不採用');
             safeDeleteRow(sheet, rowNum);
             
             isNewlyProcessed = true;
@@ -169,7 +167,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
               if (rowAgency !== 'エムスリー') continue;
               const rowJobId = String(archiveData[i][5]).trim();
 
-              // ★アーカイブの重複チェックもID完全一致のみ
               if (rowJobId === mailJobId) {
                 isExistInArchive = true;
                 break;
@@ -181,13 +178,15 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
               const uniqueId = mailJobId;
               const displayDocName = nameMatch ? nameMatch[1].trim() : mailDoctorName;
               
-              archiveSheet.appendRow([
+              const tempValues = [
                 'エムスリー', mailDateStr, fetchedWorkTime, fetchedClinic, '', 
                 mailJobId, 
                 displayDocName, m3ThreadUrl, 
                 '確定', status, new Date(), '', '', uniqueId
-              ]);
-              archiveSheet.getRange(archiveSheet.getLastRow(), 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
+              ];
+              
+              // ★変更: 進捗シートにない場合も「採用可否」を付与してアーカイブへ直接書き込み
+              appendRowToArchive(null, archiveSheet, tempValues, '採用');
               
               isNewlyProcessed = true;
               threadProcessed = true;
@@ -257,9 +256,11 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         if (rowNum !== -1) {
             let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
             values[8] = 'お断り'; values[9] = '掲載停止'; values[11] = new Date();
-            archiveSheet.appendRow(values);
-            archiveSheet.getRange(archiveSheet.getLastRow(), 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
+            
+            // ★変更: 掲載停止は「不採用」としてアーカイブへ転記
+            appendRowToArchive(sheet, archiveSheet, values, '不採用');
             safeDeleteRow(sheet, rowNum);
+            
             threadProcessed = true;
         }
       });

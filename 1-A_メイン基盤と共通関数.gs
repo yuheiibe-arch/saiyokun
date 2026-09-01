@@ -8,33 +8,66 @@ function onEdit_processProgressSheet(e) {
   const range = e.range;
   const sheet = e.source.getActiveSheet();
   
-  if (sheet.getName() !== SHEET_NAME_PROGRESS || range.getColumn() !== CHECKBOX_COLUMN || range.getValue() !== true) {
+  if (sheet.getName() !== SHEET_NAME_PROGRESS) return;
+
+  const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
+
+  // --- 採用可否のプルダウン操作時の自動色付け ---
+  if (saiyoColIndex > 0 && range.getColumn() === saiyoColIndex) {
+    const val = range.getValue();
+    if (val === '採用') range.setBackground('#b6d7a8');
+    else if (val === '不採用') range.setBackground('#ffe599');
+    else range.setBackground(null);
+    return;
+  }
+
+  // チェックボックス列以外の編集、またはチェックがTRUEでない場合は終了
+  if (range.getColumn() !== CHECKBOX_COLUMN || range.getValue() !== true) return;
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
+  if (!archiveSheet) return;
+
+  const ui = SpreadsheetApp.getUi();
+  const doctorColIndex = getColIndex_internal(sheet, '医師名');
+  const rowIndex = range.getRow();
+  const rowData = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+  const agency = String(rowData[0]).trim();
+  const saiyoStatus = saiyoColIndex > 0 ? String(rowData[saiyoColIndex - 1]).trim() : '';
+  const doctorName = doctorColIndex > 0 ? String(rowData[doctorColIndex - 1]).trim() : '';
+
+  // --- エラーハンドリング（処理中断） ---
+  if (!saiyoStatus) {
+    ui.alert('【エラー】', '採用可否が選択されていません。採用または不採用を選択してください。', ui.ButtonSet.OK);
+    range.setValue(false); // チェックを外す
+    return;
+  }
+  if (agency === '民間医局' && doctorName.includes('ドクター')) {
+    ui.alert('【エラー】', '医師名を正しくいれてください。', ui.ButtonSet.OK);
+    range.setValue(false); // チェックを外す
+    return;
+  }
+  if (agency === 'MRT' && !doctorName) {
+    ui.alert('【エラー】', '医師名を確認していれてください。', ui.ButtonSet.OK);
+    range.setValue(false); // チェックを外す
     return;
   }
 
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) return;
+  if (!lock.tryLock(30000)) {
+    range.setValue(false);
+    return;
+  }
 
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
-    if (!archiveSheet) return;
-
-    const data = sheet.getDataRange().getValues();
-
-    for (let i = data.length - 1; i > 0; i--) {
-      const isChecked = data[i][CHECKBOX_COLUMN - 1];
-      if (isChecked === true) {
-        const rowNum = i + 1;
-        let rowData = [...data[i]];
-        rowData[CHECKBOX_COLUMN - 1] = new Date();
-        archiveSheet.appendRow(rowData);
-        archiveSheet.getRange(archiveSheet.getLastRow(), 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
-        safeDeleteRow(sheet, rowNum);
-      }
-    }
+    rowData[CHECKBOX_COLUMN - 1] = new Date();
+    // ヘルパー関数を使って処理済みシートへ安全に転記（色とソート処理含む）
+    appendRowToArchive(sheet, archiveSheet, rowData, saiyoStatus);
+    safeDeleteRow(sheet, rowIndex);
   } catch (error) {
     console.error('onEdit 処理エラー: ' + error.toString());
+    range.setValue(false);
   } finally {
     lock.releaseLock();
   }
@@ -148,6 +181,13 @@ function appendRowAndFormat(sheet, rowData) {
   sheet.getRange(newRowIndex, 2).setHorizontalAlignment('left');
   sheet.getRange(newRowIndex, CHECKBOX_COLUMN).insertCheckboxes();
   
+  // --- 新規行への「採用可否」プルダウン適用 ---
+  const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
+  if (saiyoColIndex > 0) {
+    const rule = SpreadsheetApp.newDataValidation().requireValueInList(['採用', '不採用'], true).build();
+    sheet.getRange(newRowIndex, saiyoColIndex).setDataValidation(rule);
+  }
+  
   const sourceValidation = sheet.getRange("M2").getDataValidation();
   if (sourceValidation) {
     sheet.getRange(newRowIndex, 13).setDataValidation(sourceValidation);
@@ -217,5 +257,48 @@ function sortSheetByDate_internal(sheet) {
   if (lastRow > 1) {
     const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
     range.sort({column: 2, ascending: true});
+  }
+}
+
+function getColIndex_internal(sheet, headerName) {
+  if (!sheet) return -1;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const idx = headers.indexOf(headerName);
+  return idx !== -1 ? idx + 1 : -1;
+}
+
+function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
+  const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
+  const progSaiyoColIndex = sheet ? getColIndex_internal(sheet, '採用可否') : -1;
+  const dateColIndex = getColIndex_internal(archiveSheet, '勤務希望日'); // ★追加：勤務希望日の列を動的検索
+
+  let archiveData = new Array(archiveSheet.getLastColumn()).fill('');
+  for (let i = 0; i < rawValues.length; i++) {
+    if (i < archiveData.length) archiveData[i] = rawValues[i];
+  }
+  
+  if (archSaiyoColIndex > 0) {
+    archiveData[archSaiyoColIndex - 1] = saiyoStatus;
+    if (progSaiyoColIndex > 0 && progSaiyoColIndex !== archSaiyoColIndex && progSaiyoColIndex - 1 < archiveData.length) {
+      archiveData[progSaiyoColIndex - 1] = ''; // 列ズレを防ぐため進捗シート側の位置をクリア
+    }
+  }
+
+  // 1. 安全に一番下へ追加
+  archiveSheet.appendRow(archiveData);
+  const insertedRow = archiveSheet.getLastRow();
+  archiveSheet.getRange(insertedRow, 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
+
+  // 2. 色付け
+  if (archSaiyoColIndex > 0) {
+    const bgCell = archiveSheet.getRange(insertedRow, archSaiyoColIndex);
+    if (saiyoStatus === '採用') bgCell.setBackground('#b6d7a8');
+    else if (saiyoStatus === '不採用') bgCell.setBackground('#ffe599');
+  }
+
+  // 3. ★追加：勤務希望日の昇順でシート全体を自動ソート（適切な位置へ差し込み）
+  if (insertedRow > 2 && dateColIndex > 0) {
+    const sortRange = archiveSheet.getRange(2, 1, insertedRow - 1, archiveSheet.getLastColumn());
+    sortRange.sort({column: dateColIndex, ascending: true});
   }
 }

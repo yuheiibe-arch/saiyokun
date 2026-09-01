@@ -74,7 +74,7 @@ function processM3Messages_internal() {
       const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd HH:mm');
 
       // ★追加：オファー希望判定用（改行や空白の揺らぎを完全に吸収）
-      const cleanBodyForCheck = rawBody.replace(/[\r\n\s　]+/g, "");
+      const cleanBodyForCheck = rawBody.replace(/[\r\n\s ]+/g, "");
       const targetKeyword = "■オファーを出される前にご確認ください・医師のご専門や可能／不可能な手技など必要に応じて直接先生にご確認ください。";
 
       // 分類判定
