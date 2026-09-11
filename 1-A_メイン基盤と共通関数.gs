@@ -12,7 +12,6 @@ function onEdit_processProgressSheet(e) {
 
   const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
 
-  // --- 採用可否のプルダウン操作時の自動色付け ---
   if (saiyoColIndex > 0 && range.getColumn() === saiyoColIndex) {
     const val = range.getValue();
     if (val === '採用') range.setBackground('#b6d7a8');
@@ -21,7 +20,6 @@ function onEdit_processProgressSheet(e) {
     return;
   }
 
-  // チェックボックス列以外の編集、またはチェックがTRUEでない場合は終了
   if (range.getColumn() !== CHECKBOX_COLUMN || range.getValue() !== true) return;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -37,32 +35,35 @@ function onEdit_processProgressSheet(e) {
   const saiyoStatus = saiyoColIndex > 0 ? String(rowData[saiyoColIndex - 1]).trim() : '';
   const doctorName = doctorColIndex > 0 ? String(rowData[doctorColIndex - 1]).trim() : '';
 
-  // --- エラーハンドリング（処理中断） ---
   if (!saiyoStatus) {
     ui.alert('【エラー】', '採用可否が選択されていません。採用または不採用を選択してください。', ui.ButtonSet.OK);
-    range.setValue(false); // チェックを外す
+    range.setValue(false);
     return;
   }
   if (agency === '民間医局' && doctorName.includes('ドクター')) {
     ui.alert('【エラー】', '医師名を正しくいれてください。', ui.ButtonSet.OK);
-    range.setValue(false); // チェックを外す
+    range.setValue(false);
     return;
   }
   if (agency === 'MRT' && !doctorName) {
     ui.alert('【エラー】', '医師名を確認していれてください。', ui.ButtonSet.OK);
-    range.setValue(false); // チェックを外す
-    return;
-  }
-
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(30000)) {
     range.setValue(false);
     return;
   }
 
+  // ★行ズレ巻き込み事故防止：0秒ロックで重複を弾く
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(0)) {
+    return;
+  }
+
   try {
+    // ★行ズレ巻き込み事故防止：処理対象の行に本当にチェックが入っているか最終確認
+    if (sheet.getRange(rowIndex, CHECKBOX_COLUMN).getValue() !== true) {
+      return; 
+    }
+
     rowData[CHECKBOX_COLUMN - 1] = new Date();
-    // ヘルパー関数を使って処理済みシートへ安全に転記（色とソート処理含む）
     appendRowToArchive(sheet, archiveSheet, rowData, saiyoStatus);
     safeDeleteRow(sheet, rowIndex);
   } catch (error) {
@@ -92,7 +93,6 @@ function mainProcessEmails_internal() {
   processMediwel_Application(querySuffix, processedLabel);
   Utilities.sleep(1500);
   
-  // ★新規追加：ATMSメールの検知・通知（別ファイルの関数を呼び出し）
   if (typeof checkAtmsEmails_internal === 'function') {
     checkAtmsEmails_internal();
   }
@@ -101,10 +101,6 @@ function mainProcessEmails_internal() {
   sortSheetByDate_internal(ss.getSheetByName(SHEET_NAME_PROGRESS));
   Logger.log("本番処理：メール処理が完了しました。");
 }
-
-// ====================================
-// 共通ヘルパー関数群
-// ====================================
 
 function safeDeleteRow(sheet, rowNum) {
   try {
@@ -181,7 +177,6 @@ function appendRowAndFormat(sheet, rowData) {
   sheet.getRange(newRowIndex, 2).setHorizontalAlignment('left');
   sheet.getRange(newRowIndex, CHECKBOX_COLUMN).insertCheckboxes();
   
-  // --- 新規行への「採用可否」プルダウン適用 ---
   const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
   if (saiyoColIndex > 0) {
     const rule = SpreadsheetApp.newDataValidation().requireValueInList(['採用', '不採用'], true).build();
@@ -270,7 +265,7 @@ function getColIndex_internal(sheet, headerName) {
 function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
   const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
   const progSaiyoColIndex = sheet ? getColIndex_internal(sheet, '採用可否') : -1;
-  const dateColIndex = getColIndex_internal(archiveSheet, '勤務希望日'); // ★追加：勤務希望日の列を動的検索
+  const dateColIndex = getColIndex_internal(archiveSheet, '勤務希望日'); 
 
   let archiveData = new Array(archiveSheet.getLastColumn()).fill('');
   for (let i = 0; i < rawValues.length; i++) {
@@ -280,25 +275,139 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
   if (archSaiyoColIndex > 0) {
     archiveData[archSaiyoColIndex - 1] = saiyoStatus;
     if (progSaiyoColIndex > 0 && progSaiyoColIndex !== archSaiyoColIndex && progSaiyoColIndex - 1 < archiveData.length) {
-      archiveData[progSaiyoColIndex - 1] = ''; // 列ズレを防ぐため進捗シート側の位置をクリア
+      archiveData[progSaiyoColIndex - 1] = ''; 
     }
   }
 
-  // 1. 安全に一番下へ追加
   archiveSheet.appendRow(archiveData);
   const insertedRow = archiveSheet.getLastRow();
   archiveSheet.getRange(insertedRow, 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
 
-  // 2. 色付け
   if (archSaiyoColIndex > 0) {
     const bgCell = archiveSheet.getRange(insertedRow, archSaiyoColIndex);
     if (saiyoStatus === '採用') bgCell.setBackground('#b6d7a8');
     else if (saiyoStatus === '不採用') bgCell.setBackground('#ffe599');
   }
 
-  // 3. ★追加：勤務希望日の昇順でシート全体を自動ソート（適切な位置へ差し込み）
   if (insertedRow > 2 && dateColIndex > 0) {
     const sortRange = archiveSheet.getRange(2, 1, insertedRow - 1, archiveSheet.getLastColumn());
     sortRange.sort({column: dateColIndex, ascending: true});
+  }
+}
+// =================================================================
+// ▼▼▼ jinjer勤怠 有給申請メール検知・処理スクリプト ▼▼▼
+// =================================================================
+
+function processJinjerPaidLeave_internal() {
+  console.log('【jinjer有給申請検知】処理を開始します。');
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName('有給申請');
+  if (!sheet) {
+    console.error('シート「有給申請」が見つかりません。');
+    return;
+  }
+
+  const props = PropertiesService.getScriptProperties();
+  let processedIds = [];
+  try {
+    const stored = props.getProperty('JINJER_PAIDLEAVE_IDS');
+    if (stored) processedIds = JSON.parse(stored);
+  } catch(e) {}
+
+  const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" newer_than:1d`;
+  const threads = GmailApp.search(query);
+
+  if (threads.length === 0) {
+    console.log('jinjer勤怠からの新しい有給申請メールはありませんでした。');
+    return;
+  }
+
+  const colDate = getColIndex_internal(sheet, '受信日');
+  const colTarget = getColIndex_internal(sheet, '対象日');
+  const colName = getColIndex_internal(sheet, '医師名');
+  const colStatus = getColIndex_internal(sheet, '対応有無');
+
+  if (colDate < 0 || colTarget < 0 || colName < 0 || colStatus < 0) {
+    console.error('「有給申請」シートに必要なヘッダーが見つかりません。');
+    return;
+  }
+
+  let isUpdated = false;
+
+  for (const thread of threads) {
+    const messages = thread.getMessages();
+
+    for (const message of messages) {
+      const messageId = message.getId();
+      
+      if (processedIds.includes(messageId)) continue;
+
+      const body = message.getPlainBody();
+      const receivedDateStr = Utilities.formatDate(message.getDate(), 'JST', 'yyyy/MM/dd HH:mm');
+
+      const targetDateMatch = body.match(/申請対象日：\s*([^\n\r]+)/);
+      const targetDate = targetDateMatch ? targetDateMatch[1].trim() : '';
+
+      const applicantMatch = body.match(/申請者：\s*([^\n\r]+)/);
+      const applicant = applicantMatch ? applicantMatch[1].trim() : '';
+
+      if (targetDate && applicant) {
+        const newRowIdx = Math.max(sheet.getLastRow() + 1, 3);
+        const maxCol = sheet.getLastColumn();
+
+        const templateRange = sheet.getRange(2, 1, 1, maxCol);
+        const targetRange = sheet.getRange(newRowIdx, 1, 1, maxCol);
+        
+        templateRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_DATA_VALIDATION, false);
+        templateRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
+
+        sheet.getRange(newRowIdx, colDate).setValue(receivedDateStr);
+        sheet.getRange(newRowIdx, colTarget).setValue(targetDate);
+        sheet.getRange(newRowIdx, colName).setValue(applicant);
+        sheet.getRange(newRowIdx, colStatus).setValue('未着手');
+
+        console.log(`[有給申請追加] ${applicant} : ${targetDate}`);
+      }
+
+      processedIds.push(messageId);
+      isUpdated = true;
+    }
+  }
+
+  if (isUpdated) {
+    if (processedIds.length > 200) {
+      processedIds = processedIds.slice(-200);
+    }
+    props.setProperty('JINJER_PAIDLEAVE_IDS', JSON.stringify(processedIds));
+  }
+
+  console.log('【jinjer有給申請検知】処理が完了しました。');
+}
+
+// =================================================================
+// ▼ 有給申請シートの自動グレーアウト処理 ▼
+// =================================================================
+
+function onEdit_processPaidLeaveSheet(e) {
+  if (!e || !e.range) return;
+  const range = e.range;
+  const sheet = e.source.getActiveSheet();
+  
+  if (sheet.getName() !== '有給申請') return;
+
+  if (range.getRow() < 3) return;
+
+  const statusColIndex = getColIndex_internal(sheet, '対応有無');
+  
+  if (statusColIndex > 0 && range.getColumn() === statusColIndex) {
+    const val = range.getValue();
+    const rowRange = sheet.getRange(range.getRow(), 1, 1, sheet.getLastColumn());
+    
+    if (val === '済') {
+      rowRange.setBackground('#d9d9d9'); // グレーアウト
+    } else {
+      rowRange.setBackground(null); // 色をリセット
+    }
   }
 }

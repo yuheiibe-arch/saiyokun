@@ -1,6 +1,6 @@
 // =================================================================
 // 【1-B_エムスリー処理】
-// エムスリーの応募・確定（オファー経由対応）・掲載停止の各処理
+// エムスリーの応募・確定（オファー経由対応）・掲載停止・キャンセル処理
 // =================================================================
 
 function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
@@ -144,21 +144,18 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         let isNewlyProcessed = false;
 
         if (rowNum !== -1) {
-            // 進捗シートに存在する場合
             let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
             if (!values[2] && fetchedWorkTime) values[2] = fetchedWorkTime;
             if (!values[3] && fetchedClinic) values[3] = fetchedClinic;
 
             values[8] = type; values[9] = status; values[11] = new Date();
             
-            // ★変更: ヘルパー関数を使って採用可否ステータスを自動付与してアーカイブ
             appendRowToArchive(sheet, archiveSheet, values, type === '確定' ? '採用' : '不採用');
             safeDeleteRow(sheet, rowNum);
             
             isNewlyProcessed = true;
             threadProcessed = true;
         } else if (type === '確定') {
-            // 進捗シートに存在しない場合（オファー直確定、または処理済み）
             const archiveData = archiveSheet.getDataRange().getValues();
             let isExistInArchive = false;
 
@@ -185,7 +182,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
                 '確定', status, new Date(), '', '', uniqueId
               ];
               
-              // ★変更: 進捗シートにない場合も「採用可否」を付与してアーカイブへ直接書き込み
               appendRowToArchive(null, archiveSheet, tempValues, '採用');
               
               isNewlyProcessed = true;
@@ -193,7 +189,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
             }
         }
 
-        // ★★★ オファー経由の勤務確定をChatworkへ通知 ★★★
         if (isOffer && isNewlyProcessed) {
             let displayDate = mailDateStr;
             const dMatch = subject.match(/(\d{1,2}月\d{1,2}日.*?\))/);
@@ -257,12 +252,67 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
             let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
             values[8] = 'お断り'; values[9] = '掲載停止'; values[11] = new Date();
             
-            // ★変更: 掲載停止は「不採用」としてアーカイブへ転記
             appendRowToArchive(sheet, archiveSheet, values, '不採用');
             safeDeleteRow(sheet, rowNum);
             
             threadProcessed = true;
         }
+      });
+
+      if (threadProcessed && !thread.getLabels().some(l => l.getName() === processedLabelName)) {
+          thread.addLabel(processedLabel);
+      }
+  });
+
+  // === 4. キャンセル・辞退通知の自動処理（新規追加） ===
+  const m3CancelQuery = `from:(career_spot@m3career.com) subject:("キャンセルいたしました" OR "キャンセルが申請されました" OR "辞退されました") ${confirmQuerySuffix}`;
+  GmailApp.search(m3CancelQuery).forEach(thread => {
+      let threadProcessed = false;
+      thread.getMessages().forEach(message => {
+          const body = message.getPlainBody();
+          const subject = message.getSubject();
+          
+          const jobIdMatch = body.match(/([CＣ]\d+)/) || subject.match(/([CＣ]\d+)/);
+          const mailJobId = jobIdMatch ? jobIdMatch[1].trim() : '';
+          if (!mailJobId) return;
+
+          // ① 処理済み（アーカイブ）シートを検索し、確定済み案件を「不採用」に遡及変更
+          const archiveData = archiveSheet.getDataRange().getValues();
+          const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
+          let updatedInArchive = false;
+
+          for (let i = archiveData.length - 1; i > 0; i--) {
+              const rowAgency = String(archiveData[i][0]).trim();
+              const rowJobId = String(archiveData[i][5]).trim();
+
+              if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
+                  if (archSaiyoColIndex > 0) {
+                      const cell = archiveSheet.getRange(i + 1, archSaiyoColIndex);
+                      cell.setValue('不採用');
+                      cell.setBackground('#ffe599');
+                  }
+                  updatedInArchive = true;
+                  threadProcessed = true;
+                  break;
+              }
+          }
+
+          // ② もしまだ進捗シートに残っていた場合（未確定でのキャンセル）
+          if (!updatedInArchive) {
+              const sheetData = sheet.getDataRange().getValues();
+              for (let i = sheetData.length - 1; i > 0; i--) {
+                  const rowAgency = String(sheetData[i][0]).trim();
+                  const rowJobId = String(sheetData[i][5]).trim();
+                  if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
+                      let values = sheet.getRange(i + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
+                      values[8] = 'お断り'; values[9] = 'キャンセル済み'; values[11] = new Date();
+                      appendRowToArchive(sheet, archiveSheet, values, '不採用');
+                      safeDeleteRow(sheet, i + 1);
+                      threadProcessed = true;
+                      break;
+                  }
+              }
+          }
       });
 
       if (threadProcessed && !thread.getLabels().some(l => l.getName() === processedLabelName)) {
