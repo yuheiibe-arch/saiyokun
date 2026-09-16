@@ -1,6 +1,8 @@
 // =================================================================
 // 【1-B_エムスリー処理】
 // エムスリーの応募・確定（オファー経由対応）・掲載停止・キャンセル処理
+// ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
+// ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
 // =================================================================
 
 function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
@@ -9,58 +11,86 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
   const processedLabelName = processedLabel.getName();
   
+  // 現在時刻（24時間前判定用）
+  const now = new Date();
+
+  // ===============================================================
   // === 1. 応募通知の処理 ===
-  GmailApp.search(`from:(career_spot@m3career.com) subject:("ご勤務希望がありました") ${querySuffix}`).forEach(thread => {
-    let threadProcessed = false;
+  // ===============================================================
+  // ★ 処理済みラベルが付いているものは最初から検索結果から除外する
+  const applyQuery = `from:(career_spot@m3career.com) subject:("ご勤務希望がありました") -label:${processedLabelName} ${querySuffix}`;
+  const applyThreads = GmailApp.search(applyQuery);
+  
+  if (applyThreads.length > 0) {
+    // ★ API通信1回で全メッセージを一括取得
+    const applyMessagesAll = GmailApp.getMessagesForThreads(applyThreads);
     
-    thread.getMessages().forEach(message => {
-      const subject = message.getSubject();
-      const body = message.getPlainBody();
-      const receivedDate = message.getDate();
-      
-      const doctorName = extractM3DoctorName(subject);
-      const jobId = extract(subject, /(C\d+)/) || extract(body, /求人票ID：\s*([A-Za-z0-9]+)/);
-      
-      const addressMatch = body.match(/勤務地：([^\d\n]+)/);
-      const address = addressMatch ? addressMatch[1].trim() : extract(body, /^医療法人社団.+キャップスクリニック(.+)様/m).replace(/店$/, '');
-      const deptMatch = body.match(/募集科目：\s*(.+)/);
-      let department = deptMatch ? deptMatch[1].trim() : (findDepartmentFromHistory(ss, doctorName) || '小児科');
-      const newLocationName = address + '（' + department + '）';
-      
-      let workDateRaw = extract(body, /勤務日：(.+)/);
-      if (!workDateRaw) {
-        const dateMatch = body.match(/勤務時間：\s*(.*?)(?=\d{1,2}:\d{2})/);
-        if (dateMatch) workDateRaw = dateMatch[1].trim();
-      }
-      const timeRegex = /勤務時間：.*?\)\s*(\d{1,2}:\d{2}\s*[〜~〜\-]\s*\d{1,2}:\d{2})/;
-      const timeMatch = body.match(timeRegex);
-      const workTime = timeMatch ? timeMatch[1].trim() : extract(body, /勤務時間：\s*(\d{1,2}:\d{2}.+)/);
-
-      const added = appendRowAndFormatUnique(sheet, [
-        'エムスリー', formatDate(workDateRaw, receivedDate), workTime, newLocationName, department, 
-        jobId, 
-        doctorName, extract(body, /(https:\/\/career\.m3\.com\/admin\/hospital\/message_threads\/\d+)/), 
-        '', '応募通知受信', receivedDate, '', '', jobId 
-      ]);
-      if (added) threadProcessed = true;
-    });
-    
-    // 処理されたメールが1つでもあればラベルを付与
-    if (threadProcessed && !thread.getLabels().some(l => l.getName() === processedLabelName)) {
-        thread.addLabel(processedLabel);
-    }
-  });
-
-  // === 2. 確定・お断り通知の処理 ===
-  const m3ConfirmQuery = `from:(career_spot@m3career.com) subject:("勤務を確定" OR "勤務が確定" OR "勤務確定" OR "をお断り") ${confirmQuerySuffix}`;
-  GmailApp.search(m3ConfirmQuery).forEach(thread => {
+    for (let i = 0; i < applyThreads.length; i++) {
+      const thread = applyThreads[i];
+      const messages = applyMessagesAll[i];
       let threadProcessed = false;
-
-      const messages = thread.getMessages();
+      
       messages.forEach(message => {
+        // ★ 古すぎるメールのストッパー
+        const messageDate = message.getDate();
+        if ((now - messageDate) / (1000 * 60 * 60) > 48) return; 
+
         const subject = message.getSubject();
         const body = message.getPlainBody();
-        const receivedDate = message.getDate();
+        
+        const doctorName = extractM3DoctorName(subject);
+        const jobId = extract(subject, /(C\d+)/) || extract(body, /求人票ID：\s*([A-Za-z0-9]+)/);
+        
+        const addressMatch = body.match(/勤務地：([^\d\n]+)/);
+        const address = addressMatch ? addressMatch[1].trim() : extract(body, /^医療法人社団.+キャップスクリニック(.+)様/m).replace(/店$/, '');
+        const deptMatch = body.match(/募集科目：\s*(.+)/);
+        let department = deptMatch ? deptMatch[1].trim() : (findDepartmentFromHistory(ss, doctorName) || '小児科');
+        const newLocationName = address + '（' + department + '）';
+        
+        let workDateRaw = extract(body, /勤務日：(.+)/);
+        if (!workDateRaw) {
+          const dateMatch = body.match(/勤務時間：\s*(.*?)(?=\d{1,2}:\d{2})/);
+          if (dateMatch) workDateRaw = dateMatch[1].trim();
+        }
+        const timeRegex = /勤務時間：.*?\)\s*(\d{1,2}:\d{2}\s*[〜~〜\-]\s*\d{1,2}:\d{2})/;
+        const timeMatch = body.match(timeRegex);
+        const workTime = timeMatch ? timeMatch[1].trim() : extract(body, /勤務時間：\s*(\d{1,2}:\d{2}.+)/);
+
+        const added = appendRowAndFormatUnique(sheet, [
+          'エムスリー', formatDate(workDateRaw, messageDate), workTime, newLocationName, department, 
+          jobId, 
+          doctorName, extract(body, /(https:\/\/career\.m3\.com\/admin\/hospital\/message_threads\/\d+)/), 
+          '', '応募通知受信', messageDate, '', '', jobId 
+        ]);
+        if (added) threadProcessed = true;
+      });
+      
+      if (threadProcessed) {
+          thread.addLabel(processedLabel);
+      }
+    }
+  }
+
+  // ===============================================================
+  // === 2. 確定・お断り通知の処理 ===
+  // ===============================================================
+  const confirmQuery = `from:(career_spot@m3career.com) subject:("勤務を確定" OR "勤務が確定" OR "勤務確定" OR "をお断り") -label:${processedLabelName} ${confirmQuerySuffix}`;
+  const confirmThreads = GmailApp.search(confirmQuery);
+  
+  if (confirmThreads.length > 0) {
+    const confirmMessagesAll = GmailApp.getMessagesForThreads(confirmThreads);
+    
+    for (let i = 0; i < confirmThreads.length; i++) {
+      const thread = confirmThreads[i];
+      const messages = confirmMessagesAll[i];
+      let threadProcessed = false;
+
+      messages.forEach(message => {
+        const messageDate = message.getDate();
+        if ((now - messageDate) / (1000 * 60 * 60) > 14 * 24) return; // 14日ストッパー
+
+        const subject = message.getSubject();
+        const body = message.getPlainBody();
         
         let type = '';
         let status = '';
@@ -123,20 +153,19 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
             }
         }
 
-        // --- シートへのアーカイブ処理 ---
         let rowNum = -1;
         const sheetData = sheet.getDataRange().getValues();
-        for (let i = sheetData.length - 1; i > 0; i--) {
-            const rowAgency = String(sheetData[i][0]).trim();
+        for (let j = sheetData.length - 1; j > 0; j--) {
+            const rowAgency = String(sheetData[j][0]).trim();
             if (rowAgency !== 'エムスリー') continue;
             
-            const rowStatus = String(sheetData[i][9]).trim();
+            const rowStatus = String(sheetData[j][9]).trim();
             if (!rowStatus.includes('応募通知受信')) continue;
 
-            const rowJobId = String(sheetData[i][5]).trim();
+            const rowJobId = String(sheetData[j][5]).trim();
 
             if (rowJobId === mailJobId) {
-                rowNum = i + 1;
+                rowNum = j + 1;
                 break;
             }
         }
@@ -159,10 +188,10 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
             const archiveData = archiveSheet.getDataRange().getValues();
             let isExistInArchive = false;
 
-            for (let i = archiveData.length - 1; i > 0; i--) {
-              const rowAgency = String(archiveData[i][0]).trim();
+            for (let j = archiveData.length - 1; j > 0; j--) {
+              const rowAgency = String(archiveData[j][0]).trim();
               if (rowAgency !== 'エムスリー') continue;
-              const rowJobId = String(archiveData[i][5]).trim();
+              const rowJobId = String(archiveData[j][5]).trim();
 
               if (rowJobId === mailJobId) {
                 isExistInArchive = true;
@@ -193,7 +222,7 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
             let displayDate = mailDateStr;
             const dMatch = subject.match(/(\d{1,2}月\d{1,2}日.*?\))/);
             if (dMatch) {
-                displayDate = String(receivedDate.getFullYear()) + "年" + dMatch[1].replace('(', '日('); 
+                displayDate = String(messageDate.getFullYear()) + "年" + dMatch[1].replace('(', '日('); 
             } else if (mailDateStr) {
                  const d = new Date(mailDateStr);
                  const dayMap = ['日', '月', '火', '水', '木', '金', '土'];
@@ -210,24 +239,33 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 
 医師メッセージ：【 ${doctorMessage} 】
 
-受信時刻：${Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd HH:mm')}
+受信時刻：${Utilities.formatDate(messageDate, 'JST', 'yyyy/MM/dd HH:mm')}
 [/info]`;
 
             sendToChatwork('419888887', cwMessage);
         }
       });
       
-      if (threadProcessed && !thread.getLabels().some(l => l.getName() === processedLabelName)) {
+      if (threadProcessed) {
           thread.addLabel(processedLabel); 
       }
-  });
+    }
+  }
   
+  // ===============================================================
   // === 3. 掲載停止通知の処理 ===
-  const m3StopQuery = `from:(career_spot@m3career.com) subject:("スポット求人票掲載停止のご案内") ${confirmQuerySuffix}`;
-  GmailApp.search(m3StopQuery).forEach(thread => {
+  // ===============================================================
+  const stopQuery = `from:(career_spot@m3career.com) subject:("スポット求人票掲載停止のご案内") -label:${processedLabelName} ${confirmQuerySuffix}`;
+  const stopThreads = GmailApp.search(stopQuery);
+
+  if (stopThreads.length > 0) {
+    const stopMessagesAll = GmailApp.getMessagesForThreads(stopThreads);
+
+    for (let i = 0; i < stopThreads.length; i++) {
+      const thread = stopThreads[i];
+      const messages = stopMessagesAll[i];
       let threadProcessed = false;
 
-      const messages = thread.getMessages();
       messages.forEach(message => {
         const body = message.getPlainBody();
         const subject = message.getSubject();
@@ -238,12 +276,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 
         let rowNum = -1;
         const sheetData = sheet.getDataRange().getValues();
-        for (let i = sheetData.length - 1; i > 0; i--) {
-            const rowAgency = String(sheetData[i][0]).trim();
-            const rowJobId = String(sheetData[i][5]).trim();
-            const rowStatus = String(sheetData[i][9]).trim();
+        for (let j = sheetData.length - 1; j > 0; j--) {
+            const rowAgency = String(sheetData[j][0]).trim();
+            const rowJobId = String(sheetData[j][5]).trim();
+            const rowStatus = String(sheetData[j][9]).trim();
             if (rowAgency === 'エムスリー' && rowStatus.includes('応募通知受信') && rowJobId === mailJobId) {
-                rowNum = i + 1;
+                rowNum = j + 1;
                 break;
             }
         }
@@ -259,16 +297,27 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         }
       });
 
-      if (threadProcessed && !thread.getLabels().some(l => l.getName() === processedLabelName)) {
+      if (threadProcessed) {
           thread.addLabel(processedLabel);
       }
-  });
+    }
+  }
 
-  // === 4. キャンセル・辞退通知の自動処理（新規追加） ===
-  const m3CancelQuery = `from:(career_spot@m3career.com) subject:("キャンセルいたしました" OR "キャンセルが申請されました" OR "辞退されました") ${confirmQuerySuffix}`;
-  GmailApp.search(m3CancelQuery).forEach(thread => {
+  // ===============================================================
+  // === 4. キャンセル・辞退通知の自動処理 ===
+  // ===============================================================
+  const cancelQuery = `from:(career_spot@m3career.com) subject:("キャンセルいたしました" OR "キャンセルが申請されました" OR "辞退されました") -label:${processedLabelName} ${confirmQuerySuffix}`;
+  const cancelThreads = GmailApp.search(cancelQuery);
+
+  if (cancelThreads.length > 0) {
+    const cancelMessagesAll = GmailApp.getMessagesForThreads(cancelThreads);
+
+    for (let i = 0; i < cancelThreads.length; i++) {
+      const thread = cancelThreads[i];
+      const messages = cancelMessagesAll[i];
       let threadProcessed = false;
-      thread.getMessages().forEach(message => {
+
+      messages.forEach(message => {
           const body = message.getPlainBody();
           const subject = message.getSubject();
           
@@ -276,18 +325,17 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
           const mailJobId = jobIdMatch ? jobIdMatch[1].trim() : '';
           if (!mailJobId) return;
 
-          // ① 処理済み（アーカイブ）シートを検索し、確定済み案件を「不採用」に遡及変更
           const archiveData = archiveSheet.getDataRange().getValues();
           const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
           let updatedInArchive = false;
 
-          for (let i = archiveData.length - 1; i > 0; i--) {
-              const rowAgency = String(archiveData[i][0]).trim();
-              const rowJobId = String(archiveData[i][5]).trim();
+          for (let j = archiveData.length - 1; j > 0; j--) {
+              const rowAgency = String(archiveData[j][0]).trim();
+              const rowJobId = String(archiveData[j][5]).trim();
 
               if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
                   if (archSaiyoColIndex > 0) {
-                      const cell = archiveSheet.getRange(i + 1, archSaiyoColIndex);
+                      const cell = archiveSheet.getRange(j + 1, archSaiyoColIndex);
                       cell.setValue('不採用');
                       cell.setBackground('#ffe599');
                   }
@@ -297,17 +345,16 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
               }
           }
 
-          // ② もしまだ進捗シートに残っていた場合（未確定でのキャンセル）
           if (!updatedInArchive) {
               const sheetData = sheet.getDataRange().getValues();
-              for (let i = sheetData.length - 1; i > 0; i--) {
-                  const rowAgency = String(sheetData[i][0]).trim();
-                  const rowJobId = String(sheetData[i][5]).trim();
+              for (let j = sheetData.length - 1; j > 0; j--) {
+                  const rowAgency = String(sheetData[j][0]).trim();
+                  const rowJobId = String(sheetData[j][5]).trim();
                   if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
-                      let values = sheet.getRange(i + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
+                      let values = sheet.getRange(j + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
                       values[8] = 'お断り'; values[9] = 'キャンセル済み'; values[11] = new Date();
                       appendRowToArchive(sheet, archiveSheet, values, '不採用');
-                      safeDeleteRow(sheet, i + 1);
+                      safeDeleteRow(sheet, j + 1);
                       threadProcessed = true;
                       break;
                   }
@@ -315,8 +362,9 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
           }
       });
 
-      if (threadProcessed && !thread.getLabels().some(l => l.getName() === processedLabelName)) {
+      if (threadProcessed) {
           thread.addLabel(processedLabel);
       }
-  });
+    }
+  }
 }

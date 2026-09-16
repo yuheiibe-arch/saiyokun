@@ -1,5 +1,7 @@
 // =================================================================
 // ▼▼▼ 本番用：個人メール検知・通知スクリプト ▼▼▼
+// ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
+// ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
 // =================================================================
 
 // 外部メンションリストの設定
@@ -29,8 +31,8 @@ function checkPersonalEmails_internal() {
   let label = GmailApp.getUserLabelByName(PROCESSED_LABEL_PERSONAL);
   if (!label) { label = GmailApp.createLabel(PROCESSED_LABEL_PERSONAL); }
 
-  // 過去1日分の対象アドレス宛メールを取得（スレッドごと取得される）
-  const searchQuery = '(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) newer_than:1d';
+  // 過去1日分の対象アドレス宛メールを取得（★処理済みラベルは除外）
+  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) -label:${label.getName()} newer_than:1d`;
   const threads = GmailApp.search(searchQuery);
 
   if (threads.length === 0) {
@@ -63,9 +65,13 @@ function checkPersonalEmails_internal() {
   const newRows = [];
   const now = new Date(); // 現在時刻を取得（古いメール判定用）
 
-  for (const thread of threads) {
+  // ★ API通信1回で全メッセージを一括取得
+  const allMessages = GmailApp.getMessagesForThreads(threads);
+
+  for (let i = 0; i < threads.length; i++) {
+    const thread = threads[i];
+    const messages = allMessages[i];
     let threadHasNewPersonalMail = false;
-    const messages = thread.getMessages();
 
     for (const message of messages) {
       const messageId = message.getId();
@@ -161,7 +167,7 @@ ${cleanBody}
       }
     }
 
-    if (threadHasNewPersonalMail && !thread.getLabels().some(l => l.getName() === PROCESSED_LABEL_PERSONAL)) {
+    if (threadHasNewPersonalMail) {
       thread.addLabel(label);
     }
   }

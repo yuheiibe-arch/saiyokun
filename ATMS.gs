@@ -1,5 +1,6 @@
 // =================================================================
 // ▼▼▼ ATMSメール検知・通知スクリプト（単独ファイル版） ▼▼▼
+// ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // =================================================================
 
 const ATMS_CHATWORK_ROOM_ID = '421840785'; 
@@ -27,8 +28,12 @@ function checkAtmsEmails_internal() {
   const mentions = "[To:8440783]Gibran ~RGS~さん\n[To:11351957]丸山 幹枝さん\n[To:9935353]伊瓶さん\n";
   let isUpdated = false; // プロパティを更新する必要があるかのフラグ
 
-  for (const thread of threads) {
-    const messages = thread.getMessages();
+  // ★ API通信1回で全メッセージを一括取得
+  const allMessages = GmailApp.getMessagesForThreads(threads);
+
+  for (let i = 0; i < threads.length; i++) {
+    const thread = threads[i];
+    const messages = allMessages[i];
 
     for (const message of messages) {
       const messageId = message.getId();

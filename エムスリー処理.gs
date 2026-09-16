@@ -2,6 +2,7 @@
 // 【ファイル5：エムスリーメッセージ処理】(オファー希望 本文完全一致対応版)
 // 対象：当日受信分のみ
 // 通知先：419888887
+// ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // =============================================================
 
 const M3_MSG_CONFIG = {
@@ -51,8 +52,12 @@ function processM3Messages_internal() {
 
   const newRows = []; // 書き込み用バッファ
 
-  for (const thread of threads) {
-    const messages = thread.getMessages();
+  // ★ API通信1回で全メッセージを一括取得
+  const allMessages = GmailApp.getMessagesForThreads(threads);
+
+  for (let i = 0; i < threads.length; i++) {
+    const thread = threads[i];
+    const messages = allMessages[i];
     
     for (const message of messages) {
       // 日付チェック：今日以前のメールは無視
