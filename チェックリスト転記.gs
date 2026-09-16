@@ -104,6 +104,13 @@ function createRowDataForChecklist(formType, values, currentSs, targetSheet) {
   // ★追加：ターゲットシートから「採用可否」の列を動的に取得する（見つからなければデフォルトC列）
   const saiyoKahiCol = getColumnLetterByHeader(targetSheet, '採用可否') || 'C'; 
   
+  // ★追加：「医籍番号」をフォームから取得し、ターゲットシートの列を動的に探してセット
+  const isekiBango = getValueForChecklist(values, '医籍番号');
+  const isekiBangoCol = getColumnLetterByHeader(targetSheet, '医籍番号');
+  if (isekiBango && isekiBangoCol) {
+    data[isekiBangoCol] = isekiBango;
+  }
+  
   // === 1. 採用報告 ===
   if (formType === '採用報告') {
     data[saiyoKahiCol] = '採用';
