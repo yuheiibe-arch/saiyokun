@@ -2,16 +2,19 @@ var NOTIFY_SLACK_WEBHOOK_URL = PropertiesService.getScriptProperties().getProper
 var NOTIFY_SLACK_MENTION_SHEET_ID = '14RbsDcv0nXfEwweki8-9cK3lQUg1XUuhozLNF9u2qAs';
 
 function setUp() {
-  const apiKey = '';
-  PropertiesService.getScriptProperties().setProperty('CHATWORK_API_KEY', apiKey);
+  const apiKey = ''; 
+  if (apiKey !== '') {
+    PropertiesService.getScriptProperties().setProperty('CHATWORK_API_KEY', apiKey);
+    console.log('ChatworkのAPIキーを登録・更新しました。');
+  } else {
+    console.log('apiKeyが空欄のため、誤作動防止で登録をスキップしました。');
+  }
 }
 
 function getSlackMentionMap() {
   if (getSlackMentionMap.cache) return getSlackMentionMap.cache;
   try {
     const ss = SpreadsheetApp.openById(NOTIFY_SLACK_MENTION_SHEET_ID);
-    
-    // ★ 修正：一番左のシートではなく「Slack変換」シートを名指しで取得する
     const sheet = ss.getSheetByName('Slack変換');
     if (!sheet) return [];
 
@@ -42,31 +45,26 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   if (slackMsg.includes('[title]医師からのメール[/title]')) {
     channelId = 'C0BV5NT4TLY';
     
-    // データ抽出
     const dateMatch = slackMsg.match(/受信時刻：([^\n]+)/);
     const subjMatch = slackMsg.match(/件名：([^\n]+)/);
     const dateStr = dateMatch ? dateMatch[1].trim() : "";
     const subjStr = subjMatch ? subjMatch[1].trim() : "";
     
-    // 1. 医師名の抽出 ("先生"を含む最初のタイトルを確実に狙う)
     const titleRegex = /\[title\](.+?)\s*先生\[\/title\]/;
     const docMatch = slackMsg.match(titleRegex);
     const realDocName = docMatch ? docMatch[1].trim() : "不明な";
 
-    // 2. 本文の抽出
     let bodyContent = "";
     const bodyMatch = slackMsg.match(/\[title\].+? 先生\[\/title\]\n([\s\S]*?)\[\/info\]/);
     if (bodyMatch) {
         bodyContent = bodyMatch[1].trim();
     }
 
-    // 3. 誤判定で挿入されてしまった冒頭の「〇〇 先生」を完全除去
     const firstLineRegex = /^.+?\s*先生\n/;
     if (firstLineRegex.test(bodyContent)) {
         bodyContent = bodyContent.replace(firstLineRegex, '').trim();
     }
 
-    // 4. Slack用メンションの確実な変換
     let mentionText = "";
     const tags = slackMsg.match(/\[To:\d+\][^\s\n]*/g);
     if (tags) {
@@ -75,7 +73,6 @@ function buildSlackPayload(cwMessage, cwRoomId) {
             const idMatch = tag.match(/\[To:(\d+)\]/);
             if (idMatch) {
                 const cwId = idMatch[1];
-                // 実際のシートデータ (mentionMap) から同じ「数字ID」を持つものを探す
                 const exactItem = mentionMap.find(item => item.cwName.includes(cwId));
                 if (exactItem) {
                     mentionText += exactItem.slackId ? `<@${exactItem.slackId}> ` : `${exactItem.displayName} `;
@@ -94,14 +91,68 @@ function buildSlackPayload(cwMessage, cwRoomId) {
         mentionText = "`@担当者`";
     }
 
-    // 5. コードブロック（```）によるフォーマット
     const formattedSlackMsg = `\`医師からメール\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\`${realDocName} 先生\`\n\n\`\`\`\n${bodyContent}\n\`\`\``;
     
     return { channelId: channelId, text: formattedSlackMsg };
   }
 
   // ==============================================================
-  // ▼▼▼ 以下、既存の処理（個人メール以外の汎用フォーマット） ▼▼▼
+  // ▼▼▼ 特定アラート 専用の Slack綺麗化パース処理 ▼▼▼
+  // ==============================================================
+  if (slackMsg.includes('特定アラート')) {
+    channelId = 'C0BV5NT4TLY'; // ご指定のチャンネル
+    
+    const dateMatch = slackMsg.match(/受信時刻：([^\n]+)/);
+    const subjMatch = slackMsg.match(/件名：([^\n]+)/);
+    const dateStr = dateMatch ? dateMatch[1].trim() : "不明";
+    const subjStr = subjMatch ? subjMatch[1].trim() : "不明";
+    
+    // Slack用メンションの確実な変換
+    let mentionText = "";
+    const tags = slackMsg.match(/\[To:\d+\][^\s\n]*/g);
+    if (tags) {
+        tags.forEach(tag => {
+            let foundMatch = false;
+            const idMatch = tag.match(/\[To:(\d+)\]/);
+            if (idMatch) {
+                const cwId = idMatch[1];
+                const exactItem = mentionMap.find(item => item.cwName.includes(cwId));
+                if (exactItem) {
+                    mentionText += exactItem.slackId ? `<@${exactItem.slackId}> ` : `${exactItem.displayName} `;
+                    foundMatch = true;
+                }
+            }
+            if (!foundMatch) mentionText += tag + " ";
+        });
+    }
+    
+    if (slackMsg.toLowerCase().includes('[toall]')) {
+        mentionText += "<!channel> ";
+    }
+    
+    if (!mentionText.trim()) {
+        mentionText = "`@担当者`";
+    }
+
+    // 本文から不要なChatworkタグやヘッダー情報を消してクリーンにする
+    let bodyContent = slackMsg;
+    bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
+    bodyContent = bodyContent.replace(/\[toall\]/ig, '');
+    bodyContent = bodyContent.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
+    bodyContent = bodyContent.replace(/\[title\].*?\[\/title\]/ig, '');
+    bodyContent = bodyContent.replace(/受信時刻：[^\n]+/g, '');
+    bodyContent = bodyContent.replace(/件名：[^\n]+/g, '');
+    bodyContent = bodyContent.replace(/^\s*\n/gm, ''); // 無駄な空行を詰める
+    bodyContent = bodyContent.trim();
+
+    // コードブロック（```）によるフォーマット
+    const formattedSlackMsg = `\`特定アラート\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\n\`\`\`\n${bodyContent}\n\`\`\``;
+    
+    return { channelId: channelId, text: formattedSlackMsg };
+  }
+
+  // ==============================================================
+  // ▼▼▼ 以下、既存の処理（それ以外の汎用フォーマット） ▼▼▼
   // ==============================================================
   if (slackMsg.includes('エムスリー') || slackMsg.includes('オファー希望') || slackMsg.includes('メッセージ受信') || slackMsg.includes('（オファー経由）勤務確定')) {
     channelId = 'C0BV5NT4TLY';
@@ -168,10 +219,13 @@ function sendToChatwork(roomId, message) {
       UrlFetchApp.fetch(NOTIFY_SLACK_WEBHOOK_URL, options);
     }
   } catch (e) {}
+  
   const apiKey = PropertiesService.getScriptProperties().getProperty('CHATWORK_API_KEY');
   if (!apiKey) return false;
-  const url = `[https://api.chatwork.com/v2/rooms/$](https://api.chatwork.com/v2/rooms/$){roomId}/messages`;
+  
+  const url = '[https://api.chatwork.com/v2/rooms/](https://api.chatwork.com/v2/rooms/)' + roomId + '/messages';
   const options = { method: 'post', headers: { 'X-ChatWorkToken': apiKey }, payload: { body: message }, muteHttpExceptions: true };
+  
   try {
     const response = UrlFetchApp.fetch(url, options);
     return response.getResponseCode() === 200;

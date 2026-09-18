@@ -162,14 +162,7 @@ function checkPersonalEmails_internal() {
         // Chatworkメッセージを作成（元のメアド名と本当の名前が、スペースの有無に関わらず一致するかチェック）
         const isSameName = (doctorName.replace(/\s/g, '') === realName.replace(/\s/g, ''));
 
-        const chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]
-医師からメールが届きました。担当者は確認してください。
-受信時刻：${receivedDateStr}
-件名：${subject}
-[info][title]${realName} 先生[/title]
-${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}
-[/info]
-[/info]`;
+        const chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]\n医師からメールが届きました。担当者は確認してください。\n受信時刻：${receivedDateStr}\n件名：${subject}\n[info][title]${realName} 先生[/title]\n${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}\n[/info]\n[/info]`;
 
         // 共通の送信関数でChatworkへ通知
         sendToChatwork(PERSONAL_MAIL_CHATWORK_ROOM_ID, chatworkMessage);
@@ -205,6 +198,7 @@ function classifyEmailForProduction(from, subject, body) {
   // 1. システム通知（★info@を無条件でブロック）
   if (fromLower.includes('no-reply') || 
       fromLower.includes('noreply') || 
+      fromLower.includes('hospital@medrt.com') || // ★追加：指定ドメインからのメールをシステム通知として除外
       fromLower.includes('info@') ||             // ★info@ を含むアドレスを一律除外
       fromLower.includes('info-portal') || 
       fromLower.includes('enzine') || 
