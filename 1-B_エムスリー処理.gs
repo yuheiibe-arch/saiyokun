@@ -2,7 +2,7 @@
 // 【1-B_エムスリー処理】
 // エムスリーの応募・確定（オファー経由対応）・掲載停止・キャンセル処理
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
-// ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
+// ★修正内容：スレッド巻き込みによるすり抜けを防止するためラベル除外条件を撤廃
 // =================================================================
 
 function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
@@ -17,8 +17,8 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   // ===============================================================
   // === 1. 応募通知の処理 ===
   // ===============================================================
-  // ★ 処理済みラベルが付いているものは最初から検索結果から除外する
-  const applyQuery = `from:(career_spot@m3career.com) subject:("ご勤務希望がありました") -label:${processedLabelName} ${querySuffix}`;
+  // ★ ラベル除外を撤廃（既存案件の二重処理はスクリプト内のロジックで防止済み）
+  const applyQuery = `from:(career_spot@m3career.com) subject:("ご勤務希望がありました") ${querySuffix}`;
   const applyThreads = GmailApp.search(applyQuery);
   
   if (applyThreads.length > 0) {
@@ -74,7 +74,7 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   // ===============================================================
   // === 2. 確定・お断り通知の処理 ===
   // ===============================================================
-  const confirmQuery = `from:(career_spot@m3career.com) subject:("勤務を確定" OR "勤務が確定" OR "勤務確定" OR "をお断り") -label:${processedLabelName} ${confirmQuerySuffix}`;
+  const confirmQuery = `from:(career_spot@m3career.com) subject:("勤務を確定" OR "勤務が確定" OR "勤務確定" OR "をお断り") ${confirmQuerySuffix}`;
   const confirmThreads = GmailApp.search(confirmQuery);
   
   if (confirmThreads.length > 0) {
@@ -255,7 +255,7 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   // ===============================================================
   // === 3. 掲載停止通知の処理 ===
   // ===============================================================
-  const stopQuery = `from:(career_spot@m3career.com) subject:("スポット求人票掲載停止のご案内") -label:${processedLabelName} ${confirmQuerySuffix}`;
+  const stopQuery = `from:(career_spot@m3career.com) subject:("スポット求人票掲載停止のご案内") ${confirmQuerySuffix}`;
   const stopThreads = GmailApp.search(stopQuery);
 
   if (stopThreads.length > 0) {
@@ -306,7 +306,7 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   // ===============================================================
   // === 4. キャンセル・辞退通知の自動処理 ===
   // ===============================================================
-  const cancelQuery = `from:(career_spot@m3career.com) subject:("キャンセルいたしました" OR "キャンセルが申請されました" OR "辞退されました") -label:${processedLabelName} ${confirmQuerySuffix}`;
+  const cancelQuery = `from:(career_spot@m3career.com) subject:("キャンセルいたしました" OR "キャンセルが申請されました" OR "辞退されました") ${confirmQuerySuffix}`;
   const cancelThreads = GmailApp.search(cancelQuery);
 
   if (cancelThreads.length > 0) {

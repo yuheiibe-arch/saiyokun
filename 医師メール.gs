@@ -2,6 +2,7 @@
 // ▼▼▼ 本番用：個人メール検知・通知スクリプト ▼▼▼
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
+// ★追加修正：送信元名がおかしい場合、本文末尾の署名から名前を抽出して上書き
 // =================================================================
 
 // 外部メンションリストの設定
@@ -121,6 +122,17 @@ function checkPersonalEmails_internal() {
         if (nameMatch && nameMatch[1]) doctorName = nameMatch[1];
         doctorName = doctorName.replace(/["']/g, '').replace(/先生$/, '').trim();
 
+        // ★★★ Vodafone対策：本文末尾（署名）から本当の名前を推測して上書き ★★★
+        let realName = doctorName;
+        const lines = cleanBody.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+        if (lines.length > 0) {
+          const lastLine = lines[lines.length - 1];
+          // 英数字や記号を含まない、2〜15文字の日本語らしき文字列なら名前に採用
+          if (/^[^!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/0-9A-Za-z]{2,15}$/.test(lastLine)) {
+            realName = lastLine;
+          }
+        }
+
         // --- 担当者メンションの判定 ---
         let targetTags = [];
         const scanHeader = cleanNormBody.substring(0, 100); // 宛名検索用（冒頭100文字）
@@ -147,12 +159,13 @@ function checkPersonalEmails_internal() {
         // メンション対象が見つからなかった場合は [toall] を設定
         const mentionText = targetTags.length > 0 ? targetTags.join(' ') + '\n' : '[toall]\n';
 
-        // ご指定の書式でChatworkメッセージを作成
+        // Chatworkメッセージを作成（元のメアド名と本当の名前を両方使う）
         const chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]
 医師からメールが届きました。担当者は確認してください。
 受信時刻：${receivedDateStr}
 件名：${subject}
-[info][title]${doctorName} 先生[/title]
+[info][title]${realName} 先生[/title]
+${doctorName !== realName ? doctorName + ' 先生\n' : ''}
 ${cleanBody}
 [/info]
 [/info]`;

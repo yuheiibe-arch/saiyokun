@@ -80,7 +80,8 @@ function mainProcessEmails_internal() {
   if (!processedLabel) processedLabel = GmailApp.createLabel(PROCESSED_LABEL);
   
   const querySuffix = ` newer_than:2d`;
-  const confirmQuerySuffix = ` newer_than:14d`;
+  // ★ API制限対策：確定メールの遡り期間を「14日」から「1日」に変更（高負荷処理の解消）
+  const confirmQuerySuffix = ` newer_than:1d`;
 
   processM3(querySuffix, confirmQuerySuffix, processedLabel);
   Utilities.sleep(1500);
