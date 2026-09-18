@@ -159,14 +159,15 @@ function checkPersonalEmails_internal() {
         // メンション対象が見つからなかった場合は [toall] を設定
         const mentionText = targetTags.length > 0 ? targetTags.join(' ') + '\n' : '[toall]\n';
 
-        // Chatworkメッセージを作成（元のメアド名と本当の名前を両方使う）
+        // Chatworkメッセージを作成（元のメアド名と本当の名前が、スペースの有無に関わらず一致するかチェック）
+        const isSameName = (doctorName.replace(/\s/g, '') === realName.replace(/\s/g, ''));
+
         const chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]
 医師からメールが届きました。担当者は確認してください。
 受信時刻：${receivedDateStr}
 件名：${subject}
 [info][title]${realName} 先生[/title]
-${doctorName !== realName ? doctorName + ' 先生\n' : ''}
-${cleanBody}
+${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}
 [/info]
 [/info]`;
 

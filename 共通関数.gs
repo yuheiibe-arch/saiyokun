@@ -10,7 +10,11 @@ function getSlackMentionMap() {
   if (getSlackMentionMap.cache) return getSlackMentionMap.cache;
   try {
     const ss = SpreadsheetApp.openById(NOTIFY_SLACK_MENTION_SHEET_ID);
-    const sheet = ss.getSheets()[0];
+    
+    // ★ 修正：一番左のシートではなく「Slack変換」シートを名指しで取得する
+    const sheet = ss.getSheetByName('Slack変換');
+    if (!sheet) return [];
+
     const data = sheet.getDataRange().getValues();
     const map = [];
     for (let i = 1; i < data.length; i++) {
@@ -41,65 +45,57 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     // データ抽出
     const dateMatch = slackMsg.match(/受信時刻：([^\n]+)/);
     const subjMatch = slackMsg.match(/件名：([^\n]+)/);
+    const dateStr = dateMatch ? dateMatch[1].trim() : "";
+    const subjStr = subjMatch ? subjMatch[1].trim() : "";
     
-    // 医師名の抽出 (2つ目の [title] ブロックの中身)
-    let realDocName = "不明な";
-    const titleRegex = /\[title\](.+?) 先生\[\/title\]/g;
-    let m;
-    let count = 0;
-    while ((m = titleRegex.exec(slackMsg)) !== null) {
-        count++;
-        if (count === 2) {
-            realDocName = m[1].trim();
-            break;
-        }
-    }
+    // 1. 医師名の抽出 ("先生"を含む最初のタイトルを確実に狙う)
+    const titleRegex = /\[title\](.+?)\s*先生\[\/title\]/;
+    const docMatch = slackMsg.match(titleRegex);
+    const realDocName = docMatch ? docMatch[1].trim() : "不明な";
 
-    // 本文の抽出
+    // 2. 本文の抽出
     let bodyContent = "";
     const bodyMatch = slackMsg.match(/\[title\].+? 先生\[\/title\]\n([\s\S]*?)\[\/info\]/);
     if (bodyMatch) {
         bodyContent = bodyMatch[1].trim();
     }
 
-    // Slack用メンションの生成（すり抜け防止）
+    // 3. 誤判定で挿入されてしまった冒頭の「〇〇 先生」を完全除去
+    const firstLineRegex = /^.+?\s*先生\n/;
+    if (firstLineRegex.test(bodyContent)) {
+        bodyContent = bodyContent.replace(firstLineRegex, '').trim();
+    }
+
+    // 4. Slack用メンションの確実な変換
     let mentionText = "";
     const tags = slackMsg.match(/\[To:\d+\][^\s\n]*/g);
     if (tags) {
         tags.forEach(tag => {
-            let found = false;
-            // ID部分だけで検索するためのフック
-            const toIdMatch = tag.match(/\[To:\d+\]/);
-            const toId = toIdMatch ? toIdMatch[0] : tag;
-
-            for (let i = 0; i < mentionMap.length; i++) {
-                const item = mentionMap[i];
-                // 完全一致、または [To:ID] の部分一致で強制的に変換
-                if (item.cwName === tag || item.cwName.includes(toId)) {
-                    mentionText += item.slackId ? `<@${item.slackId}> ` : `${item.displayName} `;
-                    found = true;
-                    break;
+            let foundMatch = false;
+            const idMatch = tag.match(/\[To:(\d+)\]/);
+            if (idMatch) {
+                const cwId = idMatch[1];
+                // 実際のシートデータ (mentionMap) から同じ「数字ID」を持つものを探す
+                const exactItem = mentionMap.find(item => item.cwName.includes(cwId));
+                if (exactItem) {
+                    mentionText += exactItem.slackId ? `<@${exactItem.slackId}> ` : `${exactItem.displayName} `;
+                    foundMatch = true;
                 }
             }
-            if (!found) mentionText += tag + " ";
+            if (!foundMatch) mentionText += tag + " ";
         });
     }
     
-    // 全体メンションの処理
     if (slackMsg.toLowerCase().includes('[toall]')) {
         mentionText += "<!channel> ";
     }
     
-    // もしメンションが空になってしまった場合のフェイルセーフ
     if (!mentionText.trim()) {
         mentionText = "`@担当者`";
     }
 
-    const dateStr = dateMatch ? dateMatch[1] : "";
-    const subjStr = subjMatch ? subjMatch[1] : "";
-
-    // ご希望の画像デザインに合わせたフォーマット（バッククォートと引用符を使用）
-    const formattedSlackMsg = `\`医師からメール\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\`${realDocName} 先生\`\n\n>>> ${bodyContent}`;
+    // 5. コードブロック（```）によるフォーマット
+    const formattedSlackMsg = `\`医師からメール\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\`${realDocName} 先生\`\n\n\`\`\`\n${bodyContent}\n\`\`\``;
     
     return { channelId: channelId, text: formattedSlackMsg };
   }
@@ -144,7 +140,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     }
   });
   
-  slackMsg = slackMsg.replace(/\[To:\d+\][^\s ]*/g, '');
+  slackMsg = slackMsg.replace(/\[To:\d+\][^\s<]*/g, '');
   slackMsg = slackMsg.replace(/\[toall\]/ig, '<!channel>');
   slackMsg = slackMsg.replace(/\[info\]/g, '').replace(/\[\/info\]/g, '').replace(/\[hr\]/g, '\n---------------------------------------\n');
   slackMsg = slackMsg.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*\n');
@@ -172,13 +168,10 @@ function sendToChatwork(roomId, message) {
       UrlFetchApp.fetch(NOTIFY_SLACK_WEBHOOK_URL, options);
     }
   } catch (e) {}
-  
   const apiKey = PropertiesService.getScriptProperties().getProperty('CHATWORK_API_KEY');
   if (!apiKey) return false;
-  
-  const url = `https://api.chatwork.com/v2/rooms/${roomId}/messages`;
+  const url = `[https://api.chatwork.com/v2/rooms/$](https://api.chatwork.com/v2/rooms/$){roomId}/messages`;
   const options = { method: 'post', headers: { 'X-ChatWorkToken': apiKey }, payload: { body: message }, muteHttpExceptions: true };
-  
   try {
     const response = UrlFetchApp.fetch(url, options);
     return response.getResponseCode() === 200;
