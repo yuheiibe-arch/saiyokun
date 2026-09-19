@@ -245,15 +245,51 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
 
 
 // =================================================================
-// ▼▼▼ 以下、part2 と part3 (変更なし) ▼▼▼
+// ▼▼▼ 以下、part2 と part3 (Slack/CW 独立送信・ステータス分離版) ▼▼▼
 // =================================================================
 
 /**
- * === ステップ2：【改良版】紹介会社シートの直前応募を処理 ===
- *
- * ★★★【2025/11/02 修正】★★★
- * 判定基準を「受信時刻」に変更
- * (17:00 ～ 09:00 を夜間とする)
+ * 独立動作用のSlack送信ヘルパー
+ */
+function sendUrgentAlertToSlack_internal(roomId, message) {
+  try {
+    const slackPayload = buildSlackPayload(message, roomId); 
+    if (slackPayload && slackPayload.channelId) {
+      const webhookUrl = PropertiesService.getScriptProperties().getProperty('SLACK_WEBHOOK_URL');
+      const options = {
+        "method": "post",
+        "contentType": "application/json",
+        "payload": JSON.stringify({ "channel": slackPayload.channelId, "text": slackPayload.text }),
+        "muteHttpExceptions": true
+      };
+      const res = UrlFetchApp.fetch(webhookUrl, options);
+      return (res.getResponseCode() === 200 || res.getResponseCode() === 201);
+    }
+  } catch (e) {
+    console.error("Slack送信エラー: " + e.message);
+  }
+  return false;
+}
+
+/**
+ * 独立動作用のChatwork送信ヘルパー
+ */
+function sendUrgentAlertToChatwork_internal(roomId, message) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('CHATWORK_API_KEY');
+  if (!apiKey) return false;
+  const url = 'https://api.chatwork.com/v2/rooms/' + roomId + '/messages';
+  const options = { method: 'post', headers: { 'X-ChatWorkToken': apiKey }, payload: { body: message }, muteHttpExceptions: true };
+  try {
+    const response = UrlFetchApp.fetch(url, options);
+    return response.getResponseCode() === 200;
+  } catch (e) {
+    console.error("Chatwork 通信エラー: " + e.message);
+    return false;
+  }
+}
+
+/**
+ * === ステップ2：紹介会社シートの直前応募を処理 ===
  */
 function part2_checkForAgencyUrgentApplications() {
   console.log("--- ステップ2: 紹介会社シートの直前応募を処理中 ---");
@@ -268,7 +304,7 @@ function part2_checkForAgencyUrgentApplications() {
     logValues.forEach(row => {
       const status = row[6]; 
       const uniqueKey = row[5]; 
-      if ((status === '投稿連携' || status === '投稿連携(夜間)' || status === '投稿済み') && typeof uniqueKey === 'string' && uniqueKey.includes('_')) {
+      if ((status === '投稿連携' || status === '投稿連携(夜間)' || status === '投稿済み' || status.includes('済')) && typeof uniqueKey === 'string' && uniqueKey.includes('_')) {
         const parts = uniqueKey.split('_');
         if (parts.length < 3) return; 
 
@@ -392,24 +428,24 @@ ${messageBody}
 応募医師： ${doctorName}
 [/info]`;
 
-      try {
-        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue(AGENCY_STATUS_PROCESSED);
-      } catch (e) {
-        console.error(`part2: ステータス書き込み失敗 (Row: ${rowNumber})。Limit Exceededの可能性。通知をスキップします。 ${e.message}`);
-        continue; 
-      }
+      // ★ 独立管理：すでに片方が済んでいればスキップし、未済の方だけを送信する
+      let isSlackDone = (status === 'Slack済');
+      let isCwDone = (status === 'CW済');
 
-      if (sendToChatwork(URGENT_APPLY_CHATWORK_ROOM_ID, message)) {
+      let slackSuccess = isSlackDone ? true : sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
+      let cwSuccess = isCwDone ? true : sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
+
+      if (slackSuccess && cwSuccess) {
+        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue(AGENCY_STATUS_PROCESSED);
         const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd');
         const uniqueKey = `${agencyName}_${workDateStr}_${doctorName}`;
         const newRowData = [receivedDateStr, clinic, Utilities.formatDate(workDateObj, 'JST', 'yyyy年M月d日 (E)'), doctorName, workTime, uniqueKey, '紹介会社経由', agencyName];
         destinationSheet.appendRow(newRowData);
         processCount++;
-      } else {
-        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue(status || ''); 
-        console.warn(`part2: Chatwork送信失敗 (Row: ${rowNumber})。ステータスを元に戻しました。`);
-        console.error("Chatworkレートリミットに達したため、part2の残りの処理を中断します。");
-        break;
+      } else if (slackSuccess && !cwSuccess) {
+        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue('Slack済');
+      } else if (!slackSuccess && cwSuccess) {
+        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue('CW済');
       }
     }
   }
@@ -419,8 +455,6 @@ ${messageBody}
 
 /**
  * === ステップ3：「投稿連携」を検知し、Chatworkへ投稿 ===
- * 【★重複通知対策★】
- * Limit Exceeded 対策として、先にステータスを更新してから通知する
  */
 function part3_postToChatworkFromSheet() {
   console.log("--- ステップ3: Chatworkへの投稿処理を処理中 ---");
@@ -430,40 +464,49 @@ function part3_postToChatworkFromSheet() {
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sourceSheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
   const destinationSheet = spreadsheet.getSheetByName(URGENT_SHEET_NAME);
+  
   if (!sourceSheet || !destinationSheet) { console.error(`シートが見つかりません。`); return; }
   if (destinationSheet.getRange('A1').getValue() === '') {
     destinationSheet.getRange('A1:G1').setValues(sourceSheet.getRange('A1:G1').getValues());
   }
+  
   const lastRow = sourceSheet.getLastRow();
   if (lastRow < 2) { console.log('投稿対象データはありませんでした。'); return; }
+  
   const dataRange = sourceSheet.getRange(2, 1, lastRow - 1, 7);
   const values = dataRange.getValues();
   let processCount = 0;
+  
   for (let i = 0; i < values.length; i++) {
     const currentStatus = values[i][6];
-    if (currentStatus === STATUS_TO_POST || currentStatus === STATUS_TO_POST_NIGHT) {
+    
+    // ★ 未送信、または片方だけ送信済みのステータスを対象にする
+    const isTarget = (currentStatus === STATUS_TO_POST || currentStatus === STATUS_TO_POST_NIGHT || currentStatus.includes('Slack済') || currentStatus.includes('CW済'));
+    
+    if (isTarget) {
       const rowNumber = i + 2;
-
-      try {
-        sourceSheet.getRange(rowNumber, 7).setValue(STATUS_POSTED);
-      } catch (e) {
-        console.error(`part3: ステータス書き込み失敗 (Row: ${rowNumber})。Limit Exceededの可能性。通知をスキップします。 ${e.message}`);
-        continue; // ステータス更新に失敗したら、通知せずに次のループへ
-      }
-
-      destinationSheet.appendRow(values[i]);
-
-      const messageBody = (currentStatus === STATUS_TO_POST_NIGHT) ? '直近の応募が夜間にありました。\n確認お願いします。' : '直前応募がありました。\n確認お願いします。';
-
+      let isNight = currentStatus.includes('夜間');
+      
+      const messageBody = isNight ? '直近の応募が夜間にありました。\n確認お願いします。' : '直前応募がありました。\n確認お願いします。';
       const message = `[info][title]直前応募通知[/title]${messageBody}\n\n応募拠点： ${values[i][1]}\n勤務日： ${values[i][2]}\n応募時間： ${values[i][4]}\n応募医師： ${values[i][3]}[/info]`;
 
-      if (sendToChatwork(URGENT_APPLY_CHATWORK_ROOM_ID, message)) {
+      // ★ 独立管理：すでに片方が済んでいればスキップし、未済の方だけを送信する
+      let isSlackDone = currentStatus.includes('Slack済');
+      let isCwDone = currentStatus.includes('CW済');
+
+      let slackSuccess = isSlackDone ? true : sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
+      let cwSuccess = isCwDone ? true : sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
+
+      if (slackSuccess && cwSuccess) {
+        sourceSheet.getRange(rowNumber, 7).setValue(STATUS_POSTED);
+        // 両方成功したタイミングで1回だけ URGENT_SHEET に転記
+        values[i][6] = STATUS_POSTED;
+        destinationSheet.appendRow(values[i]);
         processCount++;
-      } else {
-        sourceSheet.getRange(rowNumber, 7).setValue(currentStatus); 
-        console.warn(`part3: Chatwork送信失敗 (Row: ${rowNumber})。ステータスを ${currentStatus} に戻しました。`);
-        console.error("Chatworkレートリミットに達したため、part3の残りの処理を中断します。");
-        break; 
+      } else if (slackSuccess && !cwSuccess) {
+        sourceSheet.getRange(rowNumber, 7).setValue(isNight ? 'Slack済(夜間)' : 'Slack済');
+      } else if (!slackSuccess && cwSuccess) {
+        sourceSheet.getRange(rowNumber, 7).setValue(isNight ? 'CW済(夜間)' : 'CW済');
       }
     }
   }
