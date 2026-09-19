@@ -40,7 +40,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   const mentionMap = getSlackMentionMap();
 
   // ==============================================================
-  // ▼▼▼ 医師からのメール（個人）専用の Slack綺麗化パース処理 ▼▼▼
+  // ▼▼▼ 1. 医師からのメール（個人） 専用の処理 ▼▼▼
   // ==============================================================
   if (slackMsg.includes('[title]医師からのメール[/title]')) {
     channelId = 'C0BV5NT4TLY';
@@ -86,28 +86,25 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     if (slackMsg.toLowerCase().includes('[toall]')) {
         mentionText += "<!channel> ";
     }
-    
     if (!mentionText.trim()) {
         mentionText = "`@担当者`";
     }
 
     const formattedSlackMsg = `\`医師からメール\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\`${realDocName} 先生\`\n\n\`\`\`\n${bodyContent}\n\`\`\``;
-    
     return { channelId: channelId, text: formattedSlackMsg };
   }
 
   // ==============================================================
-  // ▼▼▼ 特定アラート 専用の Slack綺麗化パース処理 ▼▼▼
+  // ▼▼▼ 2. 特定アラート 専用の処理 ▼▼▼
   // ==============================================================
   if (slackMsg.includes('特定アラート')) {
-    channelId = 'C0BV5NT4TLY'; // ご指定のチャンネル
+    channelId = 'C0BV5NT4TLY'; 
     
     const dateMatch = slackMsg.match(/受信時刻：([^\n]+)/);
     const subjMatch = slackMsg.match(/件名：([^\n]+)/);
     const dateStr = dateMatch ? dateMatch[1].trim() : "不明";
     const subjStr = subjMatch ? subjMatch[1].trim() : "不明";
     
-    // Slack用メンションの確実な変換
     let mentionText = "";
     const tags = slackMsg.match(/\[To:\d+\][^\s\n]*/g);
     if (tags) {
@@ -129,12 +126,10 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     if (slackMsg.toLowerCase().includes('[toall]')) {
         mentionText += "<!channel> ";
     }
-    
     if (!mentionText.trim()) {
         mentionText = "`@担当者`";
     }
 
-    // 本文から不要なChatworkタグやヘッダー情報を消してクリーンにする
     let bodyContent = slackMsg;
     bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
     bodyContent = bodyContent.replace(/\[toall\]/ig, '');
@@ -142,17 +137,103 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     bodyContent = bodyContent.replace(/\[title\].*?\[\/title\]/ig, '');
     bodyContent = bodyContent.replace(/受信時刻：[^\n]+/g, '');
     bodyContent = bodyContent.replace(/件名：[^\n]+/g, '');
-    bodyContent = bodyContent.replace(/^\s*\n/gm, ''); // 無駄な空行を詰める
+    bodyContent = bodyContent.replace(/^\s*\n/gm, ''); 
     bodyContent = bodyContent.trim();
 
-    // コードブロック（```）によるフォーマット
     const formattedSlackMsg = `\`特定アラート\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\n\`\`\`\n${bodyContent}\n\`\`\``;
-    
     return { channelId: channelId, text: formattedSlackMsg };
   }
 
   // ==============================================================
-  // ▼▼▼ 以下、既存の処理（それ以外の汎用フォーマット） ▼▼▼
+  // ▼▼▼ 3. 直前応募 専用の処理 ▼▼▼
+  // ==============================================================
+  if (slackMsg.includes('直前応募通知')) {
+    channelId = 'C09TRHGU64D';
+    
+    let customTitle = slackMsg.includes('紹介会社経由') ? '*【直前応募 紹介会社】*' : '*【直前応募】*';
+    
+    let bodyContent = slackMsg;
+    bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
+    bodyContent = bodyContent.replace(/\[toall\]/ig, '');
+    bodyContent = bodyContent.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
+    bodyContent = bodyContent.replace(/\[title\].*?\[\/title\]/ig, '');
+    bodyContent = bodyContent.replace(/^\s*\n/gm, ''); 
+    bodyContent = bodyContent.trim();
+
+    const formattedSlackMsg = `${customTitle}\n<!channel>\n\`\`\`\n${bodyContent}\n\`\`\``;
+    return { channelId: channelId, text: formattedSlackMsg };
+  }
+
+  // ==============================================================
+  // ▼▼▼ 4. 採用・不採用・DS承認報告 専用の処理（★ご指定デザイン）▼▼▼
+  // ==============================================================
+  if (slackMsg.includes('〈採用報告〉') || slackMsg.includes('〈不採用報告〉') || slackMsg.includes('〈DS承認報告〉')) {
+    channelId = 'C0BTW2070UF'; // ★ご指定のチャンネルID
+
+    // レポートの種類を特定し、ヘッダー（宛先）と本文を真っ二つに分割する
+    let reportType = '';
+    let splitKey = '';
+    if (slackMsg.includes('〈採用報告〉')) { reportType = '【採用報告】'; splitKey = '〈採用報告〉'; }
+    else if (slackMsg.includes('〈不採用報告〉')) { reportType = '【不採用報告】'; splitKey = '〈不採用報告〉'; }
+    else if (slackMsg.includes('〈DS承認報告〉')) { reportType = '【DS承認報告】'; splitKey = '〈DS承認報告〉'; }
+    
+    let parts = slackMsg.split(splitKey);
+    let headerPart = parts[0] || '';
+    let bodyPart = parts[1] || '';
+
+    // 本文から「担当：〇〇」を抽出してタイトルに合体させる
+    let tantoMatch = bodyPart.match(/担当：([^\n]+)/);
+    let tanto = tantoMatch ? tantoMatch[1].trim() : '';
+    if (tanto) {
+        bodyPart = bodyPart.replace(tantoMatch[0], ''); // 本文から担当者を消す
+    }
+    
+    let customTitle = `*${reportType}*`;
+    if (tanto) {
+        customTitle += ` （担当：${tanto}）`;
+    }
+
+    // メンションシートの置換処理
+    mentionMap.forEach(item => {
+      if (headerPart.includes(item.cwName)) {
+        const replacement = item.slackId ? `<@${item.slackId}>` : item.displayName;
+        headerPart = headerPart.split(item.cwName).join(replacement);
+      }
+      if (bodyPart.includes(item.cwName)) {
+        const replacement = item.slackId ? `<@${item.slackId}>` : item.displayName;
+        bodyPart = bodyPart.split(item.cwName).join(replacement);
+      }
+    });
+
+    // 宛先（ヘッダー）の不要タグを削除
+    headerPart = headerPart.replace(/\[To:\d+\][^\s<]*/g, '');
+    headerPart = headerPart.replace(/\[toall\]/ig, '<!channel>');
+    
+    // ★★★ 重複排除の最強フィルター ★★★
+    // 改行やスペースで単語ごとに全てバラバラにし、Setで重複を完全に抹消してから、スペース区切りで合体させる
+    let headerTokens = headerPart.replace(/[\n\r]+/g, ' ').split(' ').filter(t => t.trim() !== '');
+    headerTokens = [...new Set(headerTokens)]; 
+    let headerText = headerTokens.join(' ');
+
+    // 本文データのクリーンアップ
+    bodyPart = bodyPart.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
+    bodyPart = bodyPart.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*');
+    bodyPart = bodyPart.replace(/\[hr\]/ig, '---------------------------------------');
+    bodyPart = bodyPart.replace(/^\s*\n/gm, '').trim();
+
+    // 最終的なSlack用メッセージの組み立て
+    // ※メンションはブロックの外に出さないと相手に通知が鳴らないため、外に置いています。
+    let formattedSlackMsg = '';
+    if (headerText) {
+        formattedSlackMsg += `${headerText}\n`;
+    }
+    formattedSlackMsg += `${customTitle}\n\`\`\`\n${bodyPart}\n\`\`\``;
+    
+    return { channelId: channelId, text: formattedSlackMsg.trim() };
+  }
+
+  // ==============================================================
+  // ▼▼▼ 5. その他（既存の汎用フォーマット） ▼▼▼
   // ==============================================================
   if (slackMsg.includes('エムスリー') || slackMsg.includes('オファー希望') || slackMsg.includes('メッセージ受信') || slackMsg.includes('（オファー経由）勤務確定')) {
     channelId = 'C0BV5NT4TLY';
@@ -162,13 +243,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   } else if (slackMsg.includes('民間医局くん') || slackMsg.includes('給与：')) {
     channelId = 'C09TRHGU64D';
     customTitle = '*【民間医局 直接応募通知】*';
-  } else if (slackMsg.includes('直前応募通知')) {
-    channelId = 'C09TRHGU64D';
-    customTitle = '*【直前応募 紹介会社】*';
   } else if (slackMsg.includes('直近緊急キャンセル') || slackMsg.includes('時間外不在着信') || slackMsg.includes('時間外着信') || slackMsg.includes('非定型キャンセル')) {
     channelId = 'C09TRHGU64D';
-  } else if (slackMsg.includes('〈採用報告〉') || slackMsg.includes('〈不採用報告〉') || slackMsg.includes('〈DS承認報告〉')) {
-    channelId = 'C0BTW2070UF';
   } else {
     channelId = 'C09TRHGU64D';
   }
@@ -223,7 +299,7 @@ function sendToChatwork(roomId, message) {
   const apiKey = PropertiesService.getScriptProperties().getProperty('CHATWORK_API_KEY');
   if (!apiKey) return false;
   
-  const url = '[https://api.chatwork.com/v2/rooms/](https://api.chatwork.com/v2/rooms/)' + roomId + '/messages';
+  const url = 'https://api.chatwork.com/v2/rooms/' + roomId + '/messages';
   const options = { method: 'post', headers: { 'X-ChatWorkToken': apiKey }, payload: { body: message }, muteHttpExceptions: true };
   
   try {
