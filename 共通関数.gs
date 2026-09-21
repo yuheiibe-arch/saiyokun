@@ -39,6 +39,12 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   let customTitle = '';
   const mentionMap = getSlackMentionMap();
 
+  // ★夜間（21:00〜07:00）の <!channel> 制限フラグ
+  const currentHour = new Date().getHours();
+  const isNightTime = (currentHour >= 21 || currentHour < 7);
+  const isEmergencyCancel = slackMsg.includes('直近緊急キャンセル') || slackMsg.includes('緊急キャンセル');
+  const shouldSuppressChannel = isNightTime && !isEmergencyCancel; 
+
   // ==============================================================
   // ▼▼▼ 1. 医師からのメール（個人） 専用の処理 ▼▼▼
   // ==============================================================
@@ -84,7 +90,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     }
     
     if (slackMsg.toLowerCase().includes('[toall]')) {
-        mentionText += "<!channel> ";
+        if (!shouldSuppressChannel) mentionText += "<!channel> ";
     }
     if (!mentionText.trim()) {
         mentionText = "`@担当者`";
@@ -124,7 +130,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     }
     
     if (slackMsg.toLowerCase().includes('[toall]')) {
-        mentionText += "<!channel> ";
+        if (!shouldSuppressChannel) mentionText += "<!channel> ";
     }
     if (!mentionText.trim()) {
         mentionText = "`@担当者`";
@@ -160,17 +166,17 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     bodyContent = bodyContent.replace(/^\s*\n/gm, ''); 
     bodyContent = bodyContent.trim();
 
-    const formattedSlackMsg = `${customTitle}\n<!channel>\n\`\`\`\n${bodyContent}\n\`\`\``;
+    const channelTag = shouldSuppressChannel ? "" : "<!channel>\n";
+    const formattedSlackMsg = `${customTitle}\n${channelTag}\`\`\`\n${bodyContent}\n\`\`\``;
     return { channelId: channelId, text: formattedSlackMsg };
   }
 
   // ==============================================================
-  // ▼▼▼ 4. 採用・不採用・DS承認報告 専用の処理（★ご指定デザイン）▼▼▼
+  // ▼▼▼ 4. 採用・不採用・DS承認報告 専用の処理 ▼▼▼
   // ==============================================================
   if (slackMsg.includes('〈採用報告〉') || slackMsg.includes('〈不採用報告〉') || slackMsg.includes('〈DS承認報告〉')) {
-    channelId = 'C0BTW2070UF'; // ★ご指定のチャンネルID
+    channelId = 'C0BTW2070UF'; 
 
-    // レポートの種類を特定し、ヘッダー（宛先）と本文を真っ二つに分割する
     let reportType = '';
     let splitKey = '';
     if (slackMsg.includes('〈採用報告〉')) { reportType = '【採用報告】'; splitKey = '〈採用報告〉'; }
@@ -181,11 +187,10 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     let headerPart = parts[0] || '';
     let bodyPart = parts[1] || '';
 
-    // 本文から「担当：〇〇」を抽出してタイトルに合体させる
     let tantoMatch = bodyPart.match(/担当：([^\n]+)/);
     let tanto = tantoMatch ? tantoMatch[1].trim() : '';
     if (tanto) {
-        bodyPart = bodyPart.replace(tantoMatch[0], ''); // 本文から担当者を消す
+        bodyPart = bodyPart.replace(tantoMatch[0], ''); 
     }
     
     let customTitle = `*${reportType}*`;
@@ -193,36 +198,49 @@ function buildSlackPayload(cwMessage, cwRoomId) {
         customTitle += ` （担当：${tanto}）`;
     }
 
-    // メンションシートの置換処理
+    // 名前なしタグも救済するメンション変換処理
     mentionMap.forEach(item => {
+      const toMatch = item.cwName.match(/\[To:\d+\]/);
+      const toTag = toMatch ? toMatch[0] : null;
+
       if (headerPart.includes(item.cwName)) {
         const replacement = item.slackId ? `<@${item.slackId}>` : item.displayName;
         headerPart = headerPart.split(item.cwName).join(replacement);
+      } else if (toTag && headerPart.includes(toTag)) {
+        const escapedTag = toTag.replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+        const regex = new RegExp(escapedTag + '[^\\s<]*', 'g');
+        const replacement = item.slackId ? `<@${item.slackId}>` : item.displayName;
+        headerPart = headerPart.replace(regex, replacement);
       }
+      
       if (bodyPart.includes(item.cwName)) {
         const replacement = item.slackId ? `<@${item.slackId}>` : item.displayName;
         bodyPart = bodyPart.split(item.cwName).join(replacement);
+      } else if (toTag && bodyPart.includes(toTag)) {
+        const escapedTag = toTag.replace(/\[/g, '\\[').replace(/\]/g, '\\]');
+        const regex = new RegExp(escapedTag + '[^\\s<]*', 'g');
+        const replacement = item.slackId ? `<@${item.slackId}>` : item.displayName;
+        bodyPart = bodyPart.replace(regex, replacement);
       }
     });
 
-    // 宛先（ヘッダー）の不要タグを削除
     headerPart = headerPart.replace(/\[To:\d+\][^\s<]*/g, '');
-    headerPart = headerPart.replace(/\[toall\]/ig, '<!channel>');
     
-    // ★★★ 重複排除の最強フィルター ★★★
-    // 改行やスペースで単語ごとに全てバラバラにし、Setで重複を完全に抹消してから、スペース区切りで合体させる
+    if (shouldSuppressChannel) {
+        headerPart = headerPart.replace(/\[toall\]/ig, '');
+    } else {
+        headerPart = headerPart.replace(/\[toall\]/ig, '<!channel>');
+    }
+    
     let headerTokens = headerPart.replace(/[\n\r]+/g, ' ').split(' ').filter(t => t.trim() !== '');
     headerTokens = [...new Set(headerTokens)]; 
     let headerText = headerTokens.join(' ');
 
-    // 本文データのクリーンアップ
     bodyPart = bodyPart.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
     bodyPart = bodyPart.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*');
     bodyPart = bodyPart.replace(/\[hr\]/ig, '---------------------------------------');
     bodyPart = bodyPart.replace(/^\s*\n/gm, '').trim();
 
-    // 最終的なSlack用メッセージの組み立て
-    // ※メンションはブロックの外に出さないと相手に通知が鳴らないため、外に置いています。
     let formattedSlackMsg = '';
     if (headerText) {
         formattedSlackMsg += `${headerText}\n`;
@@ -268,7 +286,13 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   });
   
   slackMsg = slackMsg.replace(/\[To:\d+\][^\s<]*/g, '');
-  slackMsg = slackMsg.replace(/\[toall\]/ig, '<!channel>');
+  
+  if (shouldSuppressChannel) {
+      slackMsg = slackMsg.replace(/\[toall\]/ig, '');
+  } else {
+      slackMsg = slackMsg.replace(/\[toall\]/ig, '<!channel>');
+  }
+
   slackMsg = slackMsg.replace(/\[info\]/g, '').replace(/\[\/info\]/g, '').replace(/\[hr\]/g, '\n---------------------------------------\n');
   slackMsg = slackMsg.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*\n');
   
