@@ -92,9 +92,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     if (slackMsg.toLowerCase().includes('[toall]')) {
         if (!shouldSuppressChannel) mentionText += "<!channel> ";
     }
-    if (!mentionText.trim()) {
-        mentionText = "`@担当者`";
-    }
+    
+    // ★修正：無意味な `@担当者` の捏造付与を完全に削除しました
 
     const formattedSlackMsg = `\`医師からメール\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\`${realDocName} 先生\`\n\n\`\`\`\n${bodyContent}\n\`\`\``;
     return { channelId: channelId, text: formattedSlackMsg };
@@ -132,9 +131,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     if (slackMsg.toLowerCase().includes('[toall]')) {
         if (!shouldSuppressChannel) mentionText += "<!channel> ";
     }
-    if (!mentionText.trim()) {
-        mentionText = "`@担当者`";
-    }
+
+    // ★修正：無意味な `@担当者` の捏造付与を完全に削除しました
 
     let bodyContent = slackMsg;
     bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
