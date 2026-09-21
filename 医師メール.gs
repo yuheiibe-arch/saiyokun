@@ -3,6 +3,7 @@
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
 // ★追加修正：送信元名がおかしい場合、本文末尾の署名から名前を抽出して上書き
+// ★追加修正：時間帯（07:00〜21:00）による [toall] の付与ロジックを追加
 // =================================================================
 
 // 外部メンションリストの設定
@@ -156,8 +157,16 @@ function checkPersonalEmails_internal() {
         // メンションタグの組み立て（重複を削除して結合）
         targetTags = [...new Set(targetTags)];
         
-        // メンション対象が見つからなかった場合は [toall] を設定
-        const mentionText = targetTags.length > 0 ? targetTags.join(' ') + '\n' : '[toall]\n';
+        // ★★★ 時間帯判定ロジックの追加 ★★★
+        const currentHour = now.getHours();
+        const isDayTime = (currentHour >= 7 && currentHour < 21); // 07:00 〜 20:59
+        
+        let mentionText = '';
+        if (targetTags.length > 0) {
+            mentionText = targetTags.join(' ') + '\n';
+        } else if (isDayTime) {
+            mentionText = '[toall]\n';
+        }
 
         // Chatworkメッセージを作成（元のメアド名と本当の名前が、スペースの有無に関わらず一致するかチェック）
         const isSameName = (doctorName.replace(/\s/g, '') === realName.replace(/\s/g, ''));
@@ -165,7 +174,10 @@ function checkPersonalEmails_internal() {
         const chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]\n医師からメールが届きました。担当者は確認してください。\n受信時刻：${receivedDateStr}\n件名：${subject}\n[info][title]${realName} 先生[/title]\n${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}\n[/info]\n[/info]`;
 
         // 共通の送信関数でChatworkへ通知
-        sendToChatwork(PERSONAL_MAIL_CHATWORK_ROOM_ID, chatworkMessage);
+        const isSuccess = sendToChatwork(PERSONAL_MAIL_CHATWORK_ROOM_ID, chatworkMessage);
+        if (!isSuccess) {
+            console.error(`Chatworkへの送信に失敗しました。RoomID: ${PERSONAL_MAIL_CHATWORK_ROOM_ID}`);
+        }
 
         // ChatworkのAPI制限回避のための待機時間
         Utilities.sleep(1500);
