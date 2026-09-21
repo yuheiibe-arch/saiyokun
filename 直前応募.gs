@@ -104,7 +104,8 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
     doctorName = docMatch2[1].replace('先生', '').trim();
   }
 
-  const shiftRegex = /(\d{4}年\d{1,2}月\d{1,2}日 \([月火水木金土日]\))\s*(\d{1,2}:\d{2}\s*[～~〜\-]\s*\d{1,2}:\d{2})\s*\(([^)]+)\)/g;
+  // ★★★【重要修正】改行なし・カッコ連続のフォーマットでも確実に抽出できるように正規表現を修正 ★★★
+  const shiftRegex = /(\d{4}年\d{1,2}月\d{1,2}日\s*\([月火水木金土日]\))\s*(\d{1,2}:\d{2}\s*[～~〜\-]\s*\d{1,2}:\d{2})\s*\(([^)]+?)\)/g;
   let shiftMatch;
   let foundShift = false;
   
