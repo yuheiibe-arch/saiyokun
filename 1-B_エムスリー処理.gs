@@ -3,6 +3,7 @@
 // エムスリーの応募・確定（オファー経由対応）・掲載停止・キャンセル処理
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // ★修正内容：スレッド巻き込みによるすり抜けを防止するためラベル除外条件を撤廃
+// ★追加修正：API超節約設計（Message-IDキャッシュによる既読メールのスキップ処理を実装）
 // =================================================================
 
 function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
@@ -13,6 +14,15 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   
   // 現在時刻（24時間前判定用）
   const now = new Date();
+
+  // ★【追加】処理済みIDをプロパティから取得
+  const props = PropertiesService.getScriptProperties();
+  let processedIds = [];
+  try {
+    const stored = props.getProperty('M3_PROCESSED_IDS');
+    if (stored) processedIds = JSON.parse(stored);
+  } catch(e) {}
+  let isIdUpdated = false;
 
   // ===============================================================
   // === 1. 応募通知の処理 ===
@@ -31,6 +41,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
       
       messages.forEach(message => {
+        const messageId = message.getId();
+        // ★【追加】既に処理したメールIDなら、本文を取得する前にスキップ（API消費ゼロ）
+        if (processedIds.includes(messageId)) return;
+        processedIds.push(messageId); // 先に処理済みとして登録
+        isIdUpdated = true;
+
         // ★ 古すぎるメールのストッパー
         const messageDate = message.getDate();
         if ((now - messageDate) / (1000 * 60 * 60) > 48) return; 
@@ -86,6 +102,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+        const messageId = message.getId();
+        // ★【追加】既に処理したメールIDならスキップ
+        if (processedIds.includes(messageId)) return;
+        processedIds.push(messageId);
+        isIdUpdated = true;
+
         const messageDate = message.getDate();
         if ((now - messageDate) / (1000 * 60 * 60) > 14 * 24) return; // 14日ストッパー
 
@@ -267,6 +289,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+        const messageId = message.getId();
+        // ★【追加】既に処理したメールIDならスキップ
+        if (processedIds.includes(messageId)) return;
+        processedIds.push(messageId);
+        isIdUpdated = true;
+
         const body = message.getPlainBody();
         const subject = message.getSubject();
         const jobIdMatch = body.match(/求人票.*?([CＣ]\d+)/) || subject.match(/([CＣ]\d+)/);
@@ -318,6 +346,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+          const messageId = message.getId();
+          // ★【追加】既に処理したメールIDならスキップ
+          if (processedIds.includes(messageId)) return;
+          processedIds.push(messageId);
+          isIdUpdated = true;
+
           const body = message.getPlainBody();
           const subject = message.getSubject();
           
@@ -366,5 +400,13 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
           thread.addLabel(processedLabel);
       }
     }
+  }
+
+  // ★【追加】新しく処理したID群をプロパティに保存（最新500件のみ保持）
+  if (isIdUpdated) {
+    if (processedIds.length > 500) {
+      processedIds = processedIds.slice(-500);
+    }
+    props.setProperty('M3_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 }

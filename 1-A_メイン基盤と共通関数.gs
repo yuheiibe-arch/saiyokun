@@ -79,9 +79,12 @@ function mainProcessEmails_internal() {
   let processedLabel = GmailApp.getUserLabelByName(PROCESSED_LABEL);
   if (!processedLabel) processedLabel = GmailApp.createLabel(PROCESSED_LABEL);
   
-  const querySuffix = ` newer_than:2d`;
-  // ★ API制限対策：確定メールの遡り期間を「14日」から「1日」に変更（高負荷処理の解消）
-  const confirmQuerySuffix = ` newer_than:1d`;
+  // ★ API超節約設計：現在時刻から「2時間前」のUNIXタイムスタンプ（秒）を取得
+  const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
+  
+  // ★ API制限対策：newer_than:2d ではなく after:UNIX時間（過去2時間）を指定する
+  const querySuffix = ` after:${twoHoursAgoSec}`;
+  const confirmQuerySuffix = ` after:${twoHoursAgoSec}`;
 
   processM3(querySuffix, confirmQuerySuffix, processedLabel);
   Utilities.sleep(1500);
@@ -295,6 +298,7 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
     sortRange.sort({column: dateColIndex, ascending: true});
   }
 }
+
 // =================================================================
 // ▼▼▼ jinjer勤怠 有給申請メール検知・処理スクリプト ▼▼▼
 // =================================================================
@@ -316,7 +320,9 @@ function processJinjerPaidLeave_internal() {
     if (stored) processedIds = JSON.parse(stored);
   } catch(e) {}
 
-  const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" newer_than:1d`;
+  // ★ API超節約設計：現在時刻から「2時間前」のUNIXタイムスタンプを指定
+  const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
+  const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" after:${twoHoursAgoSec}`;
   const threads = GmailApp.search(query);
 
   if (threads.length === 0) {

@@ -16,6 +16,16 @@ function executeAllProcesses_internal() {
 
 function part1_processEmailsToSheet() {
   console.log("\n--- ステップ1: Gmailからの新規応募を処理中 ---");
+  
+  // ★【追加】処理済みIDをプロパティから取得
+  const props = PropertiesService.getScriptProperties();
+  let processedIds = [];
+  try {
+    const stored = props.getProperty('URGENT_PROCESSED_IDS');
+    if (stored) processedIds = JSON.parse(stored);
+  } catch(e) {}
+  let isIdUpdated = false;
+
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
   if (!sheet) { console.error(`シート「${LOG_SHEET_NAME}」が見つかりません。`); return; }
@@ -53,9 +63,10 @@ function part1_processEmailsToSheet() {
 
   // ★★★【重要修正】ラベルによる検索除外を完全撤廃（スレッド吸収によるすり抜け防止）
   let query = GMAIL_QUERY_APPLY;
-  // 万が一のために過去1日分だけを拾うストッパーを付与
-  if (!query.includes('newer_than')) {
-      query += ' newer_than:1d'; 
+  // ★ API超節約設計：万が一のために過去1日分拾う設計を、「過去2時間のUNIXタイムスタンプ」に変更
+  if (!query.includes('newer_than') && !query.includes('after:')) {
+      const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
+      query += ` after:${twoHoursAgoSec}`; 
   }
   const threads = GmailApp.search(query);
   
@@ -72,6 +83,12 @@ function part1_processEmailsToSheet() {
     const messages = allMessages[i];
 
     for (const message of messages) {
+      const messageId = message.getId();
+      // ★【追加】既に処理したメールIDなら、何も読み込まずにスキップ（API消費ゼロ）
+      if (processedIds.includes(messageId)) continue;
+      processedIds.push(messageId);
+      isIdUpdated = true;
+
       const messageDate = message.getDate();
       const diffHours = (now - messageDate) / (1000 * 60 * 60);
       if (diffHours > 24) {
@@ -87,6 +104,14 @@ function part1_processEmailsToSheet() {
     }
   }
   
+  // ★【追加】新しく処理したID群をプロパティに保存（最新500件のみ保持）
+  if (isIdUpdated) {
+    if (processedIds.length > 500) {
+      processedIds = processedIds.slice(-500);
+    }
+    props.setProperty('URGENT_PROCESSED_IDS', JSON.stringify(processedIds));
+  }
+
   try { flushSpecialCandidateNotifications(); } catch(e) {}
 }
 

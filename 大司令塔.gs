@@ -66,9 +66,24 @@ function sendApiErrorToSlack_internal(stepName, errorMessage) {
     const webhookUrl = PropertiesService.getScriptProperties().getProperty('SLACK_WEBHOOK_URL');
     if (!webhookUrl) return;
 
+    // ★ 1日1回制限のための日付チェック
+    const props = PropertiesService.getScriptProperties();
+    const todayStr = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd');
+    const lastErrorDate = props.getProperty('LAST_API_ERROR_DATE');
+
+    if (lastErrorDate === todayStr) {
+      console.log('本日のAPI制限エラーは通知済みのため、Slackへの送信をスキップします。');
+      return; // 同じ日ならここで処理を止めて通知しない
+    }
+
+    // ★ 時間帯によるメンション制御（日本時間 07:00 〜 18:59 はメンションあり）
+    const currentHour = parseInt(Utilities.formatDate(new Date(), 'JST', 'H'), 10);
+    const isDayTime = (currentHour >= 7 && currentHour < 19);
+    const channelMention = isDayTime ? "<!channel>\n" : "";
+
     const payload = {
-      channel: 'C09TRHGU64D', // 共通関数.gsで定義されているデフォルト通知先のSlackチャンネル（民間医局・直前応募などと同じチャンネル）
-      text: `<!channel>\n*【🚨 システムエラー・処理停止】*\nGoogle APIの1日あたりの上限（Quota）に到達したため、大司令塔の処理を強制停止しました。\n\n*・発生箇所:* ${stepName}\n*・エラー内容:* \`${errorMessage}\`\n\n※制限がリセットされるまで、自動連携が一時的にストップします。手動での確認をお願いします。`
+      channel: 'C09TRHGU64D', // 共通関数.gsで定義されているデフォルト通知先のSlackチャンネル
+      text: `${channelMention}*【🚨 システムエラー・処理停止】*\nGoogle APIの1日あたりの上限（Quota）に到達したため、大司令塔の処理を強制停止しました。\n\n*・発生箇所:* ${stepName}\n*・エラー内容:* \`${errorMessage}\`\n\n※制限がリセットされるまで、自動連携が一時的にストップします。手動での確認をお願いします。`
     };
 
     UrlFetchApp.fetch(webhookUrl, {
@@ -76,7 +91,11 @@ function sendApiErrorToSlack_internal(stepName, errorMessage) {
       contentType: "application/json",
       payload: JSON.stringify(payload)
     });
+    
+    // 通知が成功したら、今日の日付をプロパティに保存
+    props.setProperty('LAST_API_ERROR_DATE', todayStr);
     console.log('SlackへAPI制限エラーの警告を送信しました。');
+
   } catch (e) {
     console.error('Slackへの警告送信に失敗しました: ' + e.message);
   }
