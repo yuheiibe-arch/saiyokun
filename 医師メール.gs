@@ -4,6 +4,8 @@
 // ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
 // ★追加修正：送信元名がおかしい場合、本文末尾の署名から名前を抽出して上書き
 // ★追加修正：時間帯（07:00〜21:00）による [toall] の付与ロジックを追加
+// ★追加修正：API超節約設計（検索範囲を過去2時間のUNIX時間に変更）
+// ★追加修正：自社署名の「株式会社」による自爆誤検知を防ぐため、引用カット後に判定
 // =================================================================
 
 // 外部メンションリストの設定
@@ -33,8 +35,11 @@ function checkPersonalEmails_internal() {
   let label = GmailApp.getUserLabelByName(PROCESSED_LABEL_PERSONAL);
   if (!label) { label = GmailApp.createLabel(PROCESSED_LABEL_PERSONAL); }
 
-  // 過去1日分の対象アドレス宛メールを取得（★処理済みラベルは除外）
-  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) -label:${label.getName()} newer_than:1d`;
+  // ★ API超節約設計：現在時刻から「2時間前」のUNIXタイムスタンプを取得
+  const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
+
+  // ★ 過去2時間分(after:)だけを検索して負荷を激減させる
+  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) -label:${label.getName()} after:${twoHoursAgoSec}`;
   const threads = GmailApp.search(searchQuery);
 
   if (threads.length === 0) {
@@ -91,11 +96,14 @@ function checkPersonalEmails_internal() {
 
       const from = message.getFrom();
       const subject = message.getSubject();
-      // ★本文による判定を行うため、このタイミングで先に本文を取得します
       const rawBody = message.getPlainBody(); 
       
-      // ★判定関数に rawBody（本文）も渡すように変更
-      if (classifyEmailForProduction(from, subject, rawBody) === '個人候補') {
+      // ★ 引用部分を先にカットする（自社の署名にある「株式会社」等の誤検知を防ぐため）
+      const regexQuoteMarkers = /\n(>|On .*> wrote:|.* <.*@.*> wrote:|\d{4}[年\/]\d{1,2}[月\/]\d{1,2}日?.*(?::|のメール:)|From: .*|Sent: .*|-{3,}|={3,}|#{3,}|_+\s*$|(?:iPhone|iPad|スマートフォン)から送信)/i;
+      let cleanBodyBeforeCheck = rawBody.split(regexQuoteMarkers)[0].trim();
+      
+      // ★ 生の本文(rawBody)ではなく、引用をカットした(cleanBodyBeforeCheck)で判定する
+      if (classifyEmailForProduction(from, subject, cleanBodyBeforeCheck) === '個人候補') {
         const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd HH:mm');
         let body = rawBody; 
         
@@ -106,7 +114,6 @@ function checkPersonalEmails_internal() {
         const normBody = body.replace(/髙/g, '高').replace(/﨑/g, '崎');
         
         // 引用部分をカットしたクリーン本文（通知用）
-        const regexQuoteMarkers = /\n(>|On .*> wrote:|.* <.*@.*> wrote:|\d{4}[年\/]\d{1,2}[月\/]\d{1,2}日?.*(?::|のメール:)|From: .*|Sent: .*|-{3,}|={3,}|#{3,}|_+\s*$|(?:iPhone|iPad|スマートフォン)から送信)/i;
         let cleanBody = body.split(regexQuoteMarkers)[0].trim();
         // 引用部分をカットしたクリーン本文（判定用）
         let cleanNormBody = normBody.split(regexQuoteMarkers)[0].trim();
@@ -210,8 +217,8 @@ function classifyEmailForProduction(from, subject, body) {
   // 1. システム通知（★info@を無条件でブロック）
   if (fromLower.includes('no-reply') || 
       fromLower.includes('noreply') || 
-      fromLower.includes('hospital@medrt.com') || // ★追加：指定ドメインからのメールをシステム通知として除外
-      fromLower.includes('info@') ||             // ★info@ を含むアドレスを一律除外
+      fromLower.includes('hospital@medrt.com') || 
+      fromLower.includes('info@') ||             
       fromLower.includes('info-portal') || 
       fromLower.includes('enzine') || 
       fromLower.includes('entry@') || 
@@ -253,7 +260,7 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('prima-support-service.com') ||
      fromLower.includes('mnys.jp') ||
       fromLower.includes('jitsugenya.biz') ||
-      fromLower.includes('asiantms.com') || // ★新規追加：ATMSからのメールを除外
+      fromLower.includes('asiantms.com') || 
       fromLower.includes('nexway.co.jp') 
   ) {
     return '紹介会社';
@@ -268,7 +275,7 @@ function classifyEmailForProduction(from, subject, body) {
       subjectLower.includes('人材紹介') ||
       bodyLower.includes('株式会社') ||  
       bodyLower.includes('(株)') ||      
-      bodyLower.includes('（株）') ||    
+      bodyLower.includes('（株）') ||  
       bodyLower.includes('㈱')            
   ) {
     return '紹介会社・営業（キーワード検知）';

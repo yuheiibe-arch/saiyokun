@@ -63,6 +63,8 @@ function part1_processEmailsToSheet() {
 
   // ★★★【重要修正】ラベルによる検索除外を完全撤廃（スレッド吸収によるすり抜け防止）
   let query = GMAIL_QUERY_APPLY;
+  query = query.replace(/-label:[^\s]+/g, '').trim();
+
   // ★ API超節約設計：万が一のために過去1日分拾う設計を、「過去2時間のUNIXタイムスタンプ」に変更
   if (!query.includes('newer_than') && !query.includes('after:')) {
       const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
@@ -210,9 +212,7 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
   let postStatus = '';
   if (isNightTime && (workDate === tomorrowStr || workDate === dayAfterTomorrowStr)) {
       postStatus = '投稿連携(夜間)';
-  } else if (workDate === todayStr) {
-      postStatus = '投稿連携';
-  } else if (workDate === tomorrowStr) {
+  } else if (workDate === todayStr || workDate === tomorrowStr) {
       postStatus = '投稿連携';
   }
 
@@ -270,6 +270,10 @@ function part2_checkForAgencyUrgentApplications() {
   const sourceSheet = spreadsheet.getSheetByName(AGENCY_SOURCE_SHEET_NAME);
   const destinationSheet = spreadsheet.getSheetByName(URGENT_SHEET_NAME);
   const logSheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
+  
+  // ★ アーカイブシートを監視対象に追加（動的にシート名を取得）
+  const archiveSheetName = typeof SHEET_NAME_ARCHIVE !== 'undefined' ? SHEET_NAME_ARCHIVE : '処理済み';
+  const archiveSheet = spreadsheet.getSheetByName(archiveSheetName);
 
   let processedLogKeys = []; 
   if (logSheet && logSheet.getLastRow() > 1) {
@@ -277,7 +281,7 @@ function part2_checkForAgencyUrgentApplications() {
     logValues.forEach(row => {
       const status = row[6]; 
       const uniqueKey = row[5]; 
-      if ((status === '投稿連携' || status === '投稿連携(夜間)' || status === '投稿済み' || status.includes('済')) && typeof uniqueKey === 'string' && uniqueKey.includes('_')) {
+      if ((status === '投稿連携' || status === '投稿連携(夜間)' || status === '投稿済み' || String(status).includes('済')) && typeof uniqueKey === 'string' && uniqueKey.includes('_')) {
         const parts = uniqueKey.split('_');
         if (parts.length < 3) return; 
 
@@ -297,10 +301,9 @@ function part2_checkForAgencyUrgentApplications() {
     });
   }
 
-  if (!sourceSheet || !destinationSheet) { return; }
-  const statusColumnIndex = AGENCY_STATUS_COLUMN_LETTER.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0) + 1;
-  const lastRow = sourceSheet.getLastRow();
-  if (lastRow < 2) { return; }
+  if (!destinationSheet) { return; }
+  const statusColumnIndex = typeof AGENCY_STATUS_COLUMN_LETTER !== 'undefined' ? 
+                            AGENCY_STATUS_COLUMN_LETTER.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0) + 1 : 13;
 
   const today = new Date();
   today.setHours(0, 0, 0, 0); 
@@ -312,12 +315,49 @@ function part2_checkForAgencyUrgentApplications() {
   dayAfterTomorrow.setDate(today.getDate() + 2);
   const dayAfterTomorrowStr = Utilities.formatDate(dayAfterTomorrow, 'JST', 'yyyy/MM/dd');
 
-  const sourceData = sourceSheet.getRange(2, 1, lastRow - 1, sourceSheet.getLastColumn()).getValues();
-  let processCount = 0;
+  // ★ 進行管理シートとアーカイブシート（昨日・今日対応分）のデータを合流させてパトロール
+  let combinedData = [];
+
+  // ① 進行管理シートのデータをすべて追加
+  if (sourceSheet && sourceSheet.getLastRow() >= 2) {
+    const sData = sourceSheet.getRange(2, 1, sourceSheet.getLastRow() - 1, sourceSheet.getLastColumn()).getValues();
+    sData.forEach((row, i) => combinedData.push({ row: row, rowNumber: i + 2, sheet: sourceSheet }));
+  }
+
+  // ② アーカイブシートのデータを追加（対応時間が「今日・昨日」のものだけ抽出）
+  if (archiveSheet && archiveSheet.getLastRow() >= 2) {
+    const aHeaders = archiveSheet.getRange(1, 1, 1, archiveSheet.getLastColumn()).getValues()[0];
+    
+    // 対応時間が記録されている列を探す
+    let taiouColIndex = aHeaders.findIndex(h => String(h).includes('対応時間') || String(h).includes('処理日時'));
+    if (taiouColIndex === -1 && typeof CHECKBOX_COLUMN !== 'undefined') {
+      taiouColIndex = CHECKBOX_COLUMN - 1; // チェックボックスの左隣が打刻列と推測
+    }
+
+    const aData = archiveSheet.getRange(2, 1, archiveSheet.getLastRow() - 1, archiveSheet.getLastColumn()).getValues();
+    
+    const todayMidnight = new Date();
+    todayMidnight.setHours(0, 0, 0, 0);
+    const yesterdayMidnight = new Date(todayMidnight.getTime() - 24 * 60 * 60 * 1000);
+
+    aData.forEach((row, i) => {
+      if (taiouColIndex !== -1 && row[taiouColIndex]) {
+        const tDate = new Date(row[taiouColIndex]);
+        // 対応時間が昨日以降に記録されたものであれば合流させる
+        if (!isNaN(tDate.getTime()) && tDate.getTime() >= yesterdayMidnight.getTime()) {
+          combinedData.push({ row: row, rowNumber: i + 2, sheet: archiveSheet });
+        }
+      }
+    });
+  }
+
+  const processedStatusStr = typeof AGENCY_STATUS_PROCESSED !== 'undefined' ? AGENCY_STATUS_PROCESSED : '処理済';
   
-  for (let i = 0; i < sourceData.length; i++) {
-    const row = sourceData[i];
-    const rowNumber = i + 2;
+  for (let i = 0; i < combinedData.length; i++) {
+    const item = combinedData[i];
+    const row = item.row;
+    const rowNumber = item.rowNumber;
+    const currentSheet = item.sheet;
 
     const agencyName = row[0];
     const workDateObj = new Date(row[1]); 
@@ -342,35 +382,31 @@ function part2_checkForAgencyUrgentApplications() {
         isUrgent = true;
     }
 
-    if (isUrgent && status !== AGENCY_STATUS_PROCESSED) {
+    if (isUrgent && status !== processedStatusStr && status !== 'Slack済' && status !== 'CW済') {
       const agencyWorkDateNorm = Utilities.formatDate(workDateObj, 'JST', 'yyyy年M月d日');
       const agencyNormalizedKey = `${agencyWorkDateNorm}_${clinic.replace(/\s+/g, '')}_${doctorName.replace(/\s+/g, '')}`;
       
       if (processedLogKeys.includes(agencyNormalizedKey)) {
-        try { sourceSheet.getRange(rowNumber, statusColumnIndex).setValue(AGENCY_STATUS_PROCESSED); } catch(e) {}
+        try { currentSheet.getRange(rowNumber, statusColumnIndex).setValue(processedStatusStr); } catch(e) {}
         continue; 
       }
 
       let messageBody = isNightUrgent ? '直近の応募が夜間にありました。（紹介会社経由）\n確認お願いします。' : '紹介会社経由で直前応募がありました。\n確認お願いします。';
       const message = `[info][title]直前応募通知（紹介会社経由）[/title]\n${messageBody}\n\n紹介会社： ${agencyName}\n勤務日： ${Utilities.formatDate(workDateObj, 'JST', 'yyyy年M月d日 (E)')}\n応募時間： ${workTime}\n応募拠点： ${clinic}\n応募医師： ${doctorName}\n[/info]`;
 
-      let isSlackDone = (status === 'Slack済');
-      let isCwDone = (status === 'CW済');
-
-      let slackSuccess = isSlackDone ? true : sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
-      let cwSuccess = isCwDone ? true : sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
+      let slackSuccess = sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
+      let cwSuccess = sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
 
       if (slackSuccess && cwSuccess) {
-        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue(AGENCY_STATUS_PROCESSED);
+        currentSheet.getRange(rowNumber, statusColumnIndex).setValue(processedStatusStr);
         const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd');
         const uniqueKey = `${agencyName}_${workDateStr}_${doctorName}`;
         const newRowData = [receivedDateStr, clinic, Utilities.formatDate(workDateObj, 'JST', 'yyyy年M月d日 (E)'), doctorName, workTime, uniqueKey, '紹介会社経由', agencyName];
         destinationSheet.appendRow(newRowData);
-        processCount++;
       } else if (slackSuccess && !cwSuccess) {
-        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue('Slack済');
+        currentSheet.getRange(rowNumber, statusColumnIndex).setValue('Slack済');
       } else if (!slackSuccess && cwSuccess) {
-        sourceSheet.getRange(rowNumber, statusColumnIndex).setValue('CW済');
+        currentSheet.getRange(rowNumber, statusColumnIndex).setValue('CW済');
       }
     }
   }
@@ -396,22 +432,21 @@ function part3_postToChatworkFromSheet() {
   
   const dataRange = sourceSheet.getRange(2, 1, lastRow - 1, 7);
   const values = dataRange.getValues();
-  let processCount = 0;
   
   for (let i = 0; i < values.length; i++) {
     const currentStatus = values[i][6];
     
-    const isTarget = (currentStatus === STATUS_TO_POST || currentStatus === STATUS_TO_POST_NIGHT || currentStatus.includes('Slack済') || currentStatus.includes('CW済'));
+    const isTarget = (currentStatus === STATUS_TO_POST || currentStatus === STATUS_TO_POST_NIGHT || String(currentStatus).includes('Slack済') || String(currentStatus).includes('CW済'));
     
     if (isTarget) {
       const rowNumber = i + 2;
-      let isNight = currentStatus.includes('夜間');
+      let isNight = String(currentStatus).includes('夜間');
       
       const messageBody = isNight ? '直近の応募が夜間にありました。\n確認お願いします。' : '直前応募がありました。\n確認お願いします。';
       const message = `[info][title]直前応募通知[/title]${messageBody}\n\n応募拠点： ${values[i][1]}\n勤務日： ${values[i][2]}\n応募時間： ${values[i][4]}\n応募医師： ${values[i][3]}[/info]`;
 
-      let isSlackDone = currentStatus.includes('Slack済');
-      let isCwDone = currentStatus.includes('CW済');
+      let isSlackDone = String(currentStatus).includes('Slack済');
+      let isCwDone = String(currentStatus).includes('CW済');
 
       let slackSuccess = isSlackDone ? true : sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
       let cwSuccess = isCwDone ? true : sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
@@ -420,7 +455,6 @@ function part3_postToChatworkFromSheet() {
         sourceSheet.getRange(rowNumber, 7).setValue(STATUS_POSTED);
         values[i][6] = STATUS_POSTED;
         destinationSheet.appendRow(values[i]);
-        processCount++;
       } else if (slackSuccess && !cwSuccess) {
         sourceSheet.getRange(rowNumber, 7).setValue(isNight ? 'Slack済(夜間)' : 'Slack済');
       } else if (!slackSuccess && cwSuccess) {
