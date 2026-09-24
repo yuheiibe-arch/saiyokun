@@ -124,18 +124,17 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
   const body = message.getPlainBody();
   let processedFlag = false;
 
+  // ★★★【修正】医師名の抽出ロジックを強化（フォーマット揺れに完全対応）★★★
   let doctorName = "不明な医師";
   const docMatch1 = body.match(/^\s*([^\n\r]+?)\s*先生/);
-  const docMatch2 = body.match(/勤務医師名：\s*(.*?先生)/);
-  // ★★★【重要修正】デバッグで成功が証明された「吉冨先生」等のあらゆる名前フォーマットに対応する正規表現 ★★★
-  const docMatch3 = body.match(/(?:医師名|氏名|応募医師名|勤務医師名|医師氏名)[：:]\s*([^\n\r]+)/);
+  const docMatch2 = body.match(/(?:勤務医師名|応募医師名|医師氏名|医師名|氏名)[\s ]*[：:]?[\s ]*([^\n\r]+)/);
 
-  if (docMatch1) {
+  if (docMatch2) {
+    // まずラベル付き（勤務医師名：など）を探す。見つかれば「先生」や余分な空白を除去
+    doctorName = docMatch2[1].replace(/先生/g, '').trim();
+  } else if (docMatch1) {
+    // ラベルが無く、いきなり「〇〇先生」で始まっている場合
     doctorName = docMatch1[1].trim();
-  } else if (docMatch2) {
-    doctorName = docMatch2[1].replace('先生', '').trim();
-  } else if (docMatch3) {
-    doctorName = docMatch3[1].replace('先生', '').trim();
   }
 
   // ★★★【重要修正】改行なし・カッコ連続のフォーマットでも確実に抽出できるように正規表現を修正 ★★★

@@ -40,7 +40,8 @@ const CHECKBOX_COLUMN = 12; // ★K列(11)からL列(12)に変更
 
 // (直前応募：part1用)
 const PROCESSED_LABEL_APPLY = '処理済み-医師シフト応募';
-const GMAIL_QUERY_APPLY = `subject:(("【要対応】★医師シフト応募通知★") OR ("募集シフトへの応募がありました。")) newer_than:1d`;
+// ★★★【重要修正】Gmailの検索仕様に合致するよう、カッコと記号を外してシンプルにしました ★★★
+const GMAIL_QUERY_APPLY = `subject:"医師シフト応募通知" OR "募集シフトへの応募がありました" newer_than:1d`;
 
 // (キャンセル・時間外用)
 const PROCESSED_LABEL_TIMEGAI = '処理済み-時間外着信';
