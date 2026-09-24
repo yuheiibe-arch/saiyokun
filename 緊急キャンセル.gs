@@ -34,7 +34,7 @@ function checkAndLogEmergencyCancel_internal() {
   const tomorrowStr = Utilities.formatDate(tomorrow, 'JST', 'yyyy年M月d日');
   
   // ★ API通信削減: すでに処理済みラベルがついているものを検索段階で弾く
-  const query = `${GMAIL_QUERY_CANCEL} -label:${label.getName()} newer_than:2d`;
+  const query = `${GMAIL_QUERY_CANCEL} newer_than:2d`;
   const threads = GmailApp.search(query);
 
   if (threads.length === 0) {
@@ -156,8 +156,8 @@ function checkTimegaiCallWithLabel_internal() {
     if (stored) processedIds = JSON.parse(stored);
   } catch(e) {}
 
-  // 検索クエリ：直接 info@minderu.com を指定
-  const query = `from:info@minderu.com subject:"不在着信がありました" newer_than:1d`;
+  // ★ 修正: ハードコードされていた検索条件を撤廃し、全体設定の GMAIL_QUERY_TIMEGAI を正しく使用する
+  const query = `${GMAIL_QUERY_TIMEGAI} newer_than:1d`;
   const threads = GmailApp.search(query);
 
   if (threads.length === 0) {
