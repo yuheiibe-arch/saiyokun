@@ -46,8 +46,9 @@ const GMAIL_QUERY_APPLY = `subject:"医師シフト応募通知" OR "募集シ�
 // (キャンセル・時間外用)
 const PROCESSED_LABEL_TIMEGAI = '処理済み-時間外着信';
 const PROCESSED_LABEL_CANCEL = '処理済み-キャンセル'; 
-const GMAIL_QUERY_CANCEL = `subject:(("★★緊急★★＜勤務2週間以内のキャンセル申請＞") OR ("【要対応】勤務3日以内のキャンセル申請")) -label:${PROCESSED_LABEL_CANCEL}`; 
-const GMAIL_QUERY_TIMEGAI = 'subject:(("【みんなにでんわ転送】時間外応答がありました") OR ("【みんなにでんわ転送】不在着信がありました"))'; 
+// ★★★【重要修正】致命的エラーを回避するため、多重カッコを外してシンプルにしました ★★★
+const GMAIL_QUERY_CANCEL = `(subject:"勤務2週間以内のキャンセル申請" OR subject:"勤務3日以内のキャンセル申請") -label:${PROCESSED_LABEL_CANCEL}`; 
+const GMAIL_QUERY_TIMEGAI = `subject:"時間外応答がありました" OR subject:"不在着信がありました"`; 
 const GMAIL_SENDER_EXCLUDE = 'no-reply-staging';
 
 // --- 6. 紹介会社シート関連（直前応募：part2用）---

@@ -227,7 +227,8 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('nicho.co.jp') ||     
       fromLower.includes('alerts@') ||           
       fromLower.includes('mailer-daemon') ||     
-      fromLower.includes('minderu.com') ||         
+      fromLower.includes('minderu.com') ||    
+      fromLower.includes('wolterskluwer.com') || // ★ ここに wolterskluwer.com を追加しました
       subjectLower.includes('セキュリティ') ||     
       subjectLower.includes('アラート') ||         
       subjectLower.includes('ログイン') ||
@@ -253,8 +254,8 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('mstage-corp.jp') || 
       fromLower.includes('medrt.com') ||
       fromLower.includes('sogo-medical.co.jp') || 
-      fromLower.includes('mynavi.jp') ||           
-      fromLower.includes('mediwel.net') ||           
+      fromLower.includes('mynavi.jp') ||             
+      fromLower.includes('mediwel.net') ||             
       fromLower.includes('prima-support-service.com') ||
      fromLower.includes('mnys.jp') ||
       fromLower.includes('jitsugenya.biz') ||

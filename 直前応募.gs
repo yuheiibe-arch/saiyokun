@@ -65,10 +65,10 @@ function part1_processEmailsToSheet() {
   let query = GMAIL_QUERY_APPLY;
   query = query.replace(/-label:[^\s]+/g, '').trim();
 
-  // ★★★【重要修正】Gmailバグの原因「after:UNIX時間」を強制削除し、確実に1日分の最新30件だけを取得 ★★★
+  // ★★★【究極修正】Gmailバグの原因「after:UNIX時間」を強制削除し、スレッド化対策で14日分取得 ★★★
   query = query.replace(/after:\d+/g, '').trim();
   if (!query.includes('newer_than')) {
-      query += ' newer_than:1d'; 
+      query += ' newer_than:14d'; 
   }
   
   // 第2引数、第3引数で「最新の30スレッドだけを取得」することでAPI上限を絶対に回避します
@@ -95,6 +95,8 @@ function part1_processEmailsToSheet() {
 
       const messageDate = message.getDate();
       const diffHours = (now - messageDate) / (1000 * 60 * 60);
+      
+      // ★★★【重要】14日分取得した中で、直近24時間以内の「本当の最新メール」だけを処理するストッパー ★★★
       if (diffHours > 24) {
         continue; 
       }

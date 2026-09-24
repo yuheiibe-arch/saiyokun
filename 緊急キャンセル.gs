@@ -33,8 +33,8 @@ function checkAndLogEmergencyCancel_internal() {
   const todayStr = Utilities.formatDate(today, 'JST', 'yyyy年M月d日');
   const tomorrowStr = Utilities.formatDate(tomorrow, 'JST', 'yyyy年M月d日');
   
-  // ★ API通信削減: すでに処理済みラベルがついているものを検索段階で弾く
-  const query = `${GMAIL_QUERY_CANCEL} newer_than:2d`;
+  // ★★★【究極修正】スレッド化による見落としを防ぐため、14日分をガサッと取得
+  const query = `${GMAIL_QUERY_CANCEL} newer_than:14d`;
   const threads = GmailApp.search(query);
 
   if (threads.length === 0) {
@@ -55,7 +55,7 @@ function checkAndLogEmergencyCancel_internal() {
     let threadProcessed = false;
 
     for (const message of messages) {
-      // ストッパー：24時間以上古いメールは無視
+      // ストッパー：24時間以上古いメールは無視（14日分取得した中から本当の最新を抽出）
       if ((today.getTime() - message.getDate().getTime()) / (1000 * 60 * 60) > 24) continue;
 
       const subject = message.getSubject();
@@ -156,8 +156,8 @@ function checkTimegaiCallWithLabel_internal() {
     if (stored) processedIds = JSON.parse(stored);
   } catch(e) {}
 
-  // ★ 修正: ハードコードされていた検索条件を撤廃し、全体設定の GMAIL_QUERY_TIMEGAI を正しく使用する
-  const query = `${GMAIL_QUERY_TIMEGAI} newer_than:1d`;
+  // ★★★【究極修正】スレッド化による見落としを防ぐため、14日分をガサッと取得
+  const query = `${GMAIL_QUERY_TIMEGAI} newer_than:14d`;
   const threads = GmailApp.search(query);
 
   if (threads.length === 0) {
@@ -179,6 +179,8 @@ function checkTimegaiCallWithLabel_internal() {
       const receivedDate = message.getDate();
       
       if (processedIds.includes(messageId)) continue;
+      
+      // ★ 14日分取得した中で、直近24時間以内の「本当の最新メール」だけを処理するストッパー
       if ((now.getTime() - receivedDate.getTime()) / (1000 * 60 * 60) > 24) continue;
 
       const body = message.getPlainBody();
@@ -237,10 +239,10 @@ function checkInformalCancel_internal() {
     return;
   }
 
-  // ★ API通信削減: 検索段階で処理済みを除外
+  // ★★★【究極修正】スレッド化による見落としを防ぐため、14日分をガサッと取得
   const timeQuery = `(${timeKeywords.join(' OR ')})`;
   const actionQuery = `(${actionKeywords.join(' OR ')})`;
-  const gmailQuery = `${timeQuery} ${actionQuery} -label:${label.getName()} newer_than:1d`;
+  const gmailQuery = `${timeQuery} ${actionQuery} -label:${label.getName()} newer_than:14d`;
 
   console.log(`Gmail検索クエリ: ${gmailQuery}`);
 
@@ -285,6 +287,8 @@ function checkInformalCancel_internal() {
       if (existingMessageIDs.includes(messageId)) continue; 
 
       const receivedDate = message.getDate();
+      
+      // ★ 14日分取得した中で、直近24時間以内の「本当の最新メール」だけを処理するストッパー
       if ((now.getTime() - receivedDate.getTime()) / (1000 * 60 * 60) > 24) continue; 
 
       const from = message.getFrom();
@@ -321,16 +325,7 @@ function checkInformalCancel_internal() {
       
       existingMessageIDs.push(messageId); 
 
-      const chatworkMessage = `[toall]\n[info][title]特定アラート[/title]
-メールに特定のフレーズを含む内容が届きました。
-内容の確認をお願いします。
-※本アラートには関係のないメールも含まれる可能性があります。
-
-受信時刻： ${receivedTime}
-件名： ${subject}
-内容：
-${bodySnippet}...
-[/info]`;
+      const chatworkMessage = `[toall]\n[info][title]特定アラート[/title]\nメールに特定のフレーズを含む内容が届きました。\n内容の確認をお願いします。\n※本アラートには関係のないメールも含まれる可能性があります。\n\n受信時刻： ${receivedTime}\n件名： ${subject}\n内容：\n${bodySnippet}...\n[/info]`;
 
       sendToChatwork(DOTAKYAN_CHATWORK_ROOM_ID, chatworkMessage);
       Utilities.sleep(1500); // 制限回避
