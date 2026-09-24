@@ -79,12 +79,9 @@ function mainProcessEmails_internal() {
   let processedLabel = GmailApp.getUserLabelByName(PROCESSED_LABEL);
   if (!processedLabel) processedLabel = GmailApp.createLabel(PROCESSED_LABEL);
   
-  // ★ API超節約設計：現在時刻から「2時間前」のUNIXタイムスタンプ（秒）を取得
-  const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
-  
-  // ★ API制限対策：newer_than:2d ではなく after:UNIX時間（過去2時間）を指定する
-  const querySuffix = ` after:${twoHoursAgoSec}`;
-  const confirmQuerySuffix = ` after:${twoHoursAgoSec}`;
+  // ★ バグの元凶「after:UNIX時間」を完全撤廃。安全な newer_than:1d に固定
+  const querySuffix = ` newer_than:1d`;
+  const confirmQuerySuffix = ` newer_than:1d`;
 
   processM3(querySuffix, confirmQuerySuffix, processedLabel);
   Utilities.sleep(1500);
@@ -320,10 +317,9 @@ function processJinjerPaidLeave_internal() {
     if (stored) processedIds = JSON.parse(stored);
   } catch(e) {}
 
-  // ★ API超節約設計：現在時刻から「2時間前」のUNIXタイムスタンプを指定
-  const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
-  const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" after:${twoHoursAgoSec}`;
-  const threads = GmailApp.search(query);
+  // ★ API上限回避の最強ストッパー: newer_than:1d で検索し、最新30件のみ取得
+  const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" newer_than:1d`;
+  const threads = GmailApp.search(query, 0, 30);
 
   if (threads.length === 0) {
     console.log('jinjer勤怠からの新しい有給申請メールはありませんでした。');

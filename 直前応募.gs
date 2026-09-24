@@ -65,12 +65,14 @@ function part1_processEmailsToSheet() {
   let query = GMAIL_QUERY_APPLY;
   query = query.replace(/-label:[^\s]+/g, '').trim();
 
-  // ★ API超節約設計：万が一のために過去1日分拾う設計を、「過去2時間のUNIXタイムスタンプ」に変更
-  if (!query.includes('newer_than') && !query.includes('after:')) {
-      const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
-      query += ` after:${twoHoursAgoSec}`; 
+  // ★★★【重要修正】Gmailバグの原因「after:UNIX時間」を強制削除し、確実に1日分の最新30件だけを取得 ★★★
+  query = query.replace(/after:\d+/g, '').trim();
+  if (!query.includes('newer_than')) {
+      query += ' newer_than:1d'; 
   }
-  const threads = GmailApp.search(query);
+  
+  // 第2引数、第3引数で「最新の30スレッドだけを取得」することでAPI上限を絶対に回避します
+  const threads = GmailApp.search(query, 0, 30);
   
   if (threads.length === 0) { 
     console.log('対象のメールはありませんでした。'); 
@@ -125,10 +127,15 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
   let doctorName = "不明な医師";
   const docMatch1 = body.match(/^\s*([^\n\r]+?)\s*先生/);
   const docMatch2 = body.match(/勤務医師名：\s*(.*?先生)/);
+  // ★★★【重要修正】デバッグで成功が証明された「吉冨先生」等のあらゆる名前フォーマットに対応する正規表現 ★★★
+  const docMatch3 = body.match(/(?:医師名|氏名|応募医師名|勤務医師名|医師氏名)[：:]\s*([^\n\r]+)/);
+
   if (docMatch1) {
     doctorName = docMatch1[1].trim();
   } else if (docMatch2) {
     doctorName = docMatch2[1].replace('先生', '').trim();
+  } else if (docMatch3) {
+    doctorName = docMatch3[1].replace('先生', '').trim();
   }
 
   // ★★★【重要修正】改行なし・カッコ連続のフォーマットでも確実に抽出できるように正規表現を修正 ★★★
@@ -271,7 +278,6 @@ function part2_checkForAgencyUrgentApplications() {
   const destinationSheet = spreadsheet.getSheetByName(URGENT_SHEET_NAME);
   const logSheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
   
-  // ★ アーカイブシートを監視対象に追加（動的にシート名を取得）
   const archiveSheetName = typeof SHEET_NAME_ARCHIVE !== 'undefined' ? SHEET_NAME_ARCHIVE : '処理済み';
   const archiveSheet = spreadsheet.getSheetByName(archiveSheetName);
 
@@ -315,23 +321,19 @@ function part2_checkForAgencyUrgentApplications() {
   dayAfterTomorrow.setDate(today.getDate() + 2);
   const dayAfterTomorrowStr = Utilities.formatDate(dayAfterTomorrow, 'JST', 'yyyy/MM/dd');
 
-  // ★ 進行管理シートとアーカイブシート（昨日・今日対応分）のデータを合流させてパトロール
   let combinedData = [];
 
-  // ① 進行管理シートのデータをすべて追加
   if (sourceSheet && sourceSheet.getLastRow() >= 2) {
     const sData = sourceSheet.getRange(2, 1, sourceSheet.getLastRow() - 1, sourceSheet.getLastColumn()).getValues();
     sData.forEach((row, i) => combinedData.push({ row: row, rowNumber: i + 2, sheet: sourceSheet }));
   }
 
-  // ② アーカイブシートのデータを追加（対応時間が「今日・昨日」のものだけ抽出）
   if (archiveSheet && archiveSheet.getLastRow() >= 2) {
     const aHeaders = archiveSheet.getRange(1, 1, 1, archiveSheet.getLastColumn()).getValues()[0];
     
-    // 対応時間が記録されている列を探す
     let taiouColIndex = aHeaders.findIndex(h => String(h).includes('対応時間') || String(h).includes('処理日時'));
     if (taiouColIndex === -1 && typeof CHECKBOX_COLUMN !== 'undefined') {
-      taiouColIndex = CHECKBOX_COLUMN - 1; // チェックボックスの左隣が打刻列と推測
+      taiouColIndex = CHECKBOX_COLUMN - 1; 
     }
 
     const aData = archiveSheet.getRange(2, 1, archiveSheet.getLastRow() - 1, archiveSheet.getLastColumn()).getValues();
@@ -343,7 +345,6 @@ function part2_checkForAgencyUrgentApplications() {
     aData.forEach((row, i) => {
       if (taiouColIndex !== -1 && row[taiouColIndex]) {
         const tDate = new Date(row[taiouColIndex]);
-        // 対応時間が昨日以降に記録されたものであれば合流させる
         if (!isNaN(tDate.getTime()) && tDate.getTime() >= yesterdayMidnight.getTime()) {
           combinedData.push({ row: row, rowNumber: i + 2, sheet: archiveSheet });
         }

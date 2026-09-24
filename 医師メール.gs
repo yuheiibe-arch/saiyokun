@@ -35,12 +35,11 @@ function checkPersonalEmails_internal() {
   let label = GmailApp.getUserLabelByName(PROCESSED_LABEL_PERSONAL);
   if (!label) { label = GmailApp.createLabel(PROCESSED_LABEL_PERSONAL); }
 
-  // ★ API超節約設計：現在時刻から「2時間前」のUNIXタイムスタンプを取得
-  const twoHoursAgoSec = Math.floor((Date.now() - (2 * 60 * 60 * 1000)) / 1000);
-
-  // ★ 過去2時間分(after:)だけを検索して負荷を激減させる
-  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) -label:${label.getName()} after:${twoHoursAgoSec}`;
-  const threads = GmailApp.search(searchQuery);
+  // ★★★【重要修正】バグの元凶である after:UNIX時間 を撤廃し、newer_than:1d に変更 ★★★
+  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) -label:${label.getName()} newer_than:1d`;
+  
+  // ★ API通信上限を絶対に回避するためのストッパー: 最新の30スレッドだけをチェック
+  const threads = GmailApp.search(searchQuery, 0, 30);
 
   if (threads.length === 0) {
     console.log('対象のメールはありませんでした。');
@@ -239,8 +238,7 @@ function classifyEmailForProduction(from, subject, body) {
       subjectLower.includes('【要確認】') ||
       subjectLower.includes('お問い合わせスタッフ送信') ||
       subjectLower.includes('capsシフト') ||
-      subjectLower.includes('通勤経路') ||
-      subjectLower.includes('交通費申請') ||
+      // ★★★【重要修正】ここに残っていた「通勤経路」「交通費申請」を消し去り、自爆誤検知を解消 ★★★
       subjectLower.includes('【jinjer勤怠】') ||
       subjectLower.includes('【ジンジャー】') ||
       subjectLower.includes('招待:') || 
