@@ -268,6 +268,10 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
   const progSaiyoColIndex = sheet ? getColIndex_internal(sheet, '採用可否') : -1;
   const dateColIndex = getColIndex_internal(archiveSheet, '勤務希望日'); 
 
+  // ★追加: 「直前応募通知」の列位置を動的に特定
+  const archUrgentColIndex = getColIndex_internal(archiveSheet, '直前応募通知');
+  const progUrgentColIndex = sheet ? getColIndex_internal(sheet, '直前応募通知') : -1;
+
   let archiveData = new Array(archiveSheet.getLastColumn()).fill('');
   for (let i = 0; i < rawValues.length; i++) {
     if (i < archiveData.length) archiveData[i] = rawValues[i];
@@ -277,6 +281,20 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
     archiveData[archSaiyoColIndex - 1] = saiyoStatus;
     if (progSaiyoColIndex > 0 && progSaiyoColIndex !== archSaiyoColIndex && progSaiyoColIndex - 1 < archiveData.length) {
       archiveData[progSaiyoColIndex - 1] = ''; 
+    }
+  }
+
+  // ★追加: シート移動時に「直前応募通知」の印（タイムスタンプ等）を正確に引き継ぐ
+  if (archUrgentColIndex > 0) {
+    let urgentValue = '';
+    if (progUrgentColIndex > 0 && progUrgentColIndex - 1 < rawValues.length) {
+       urgentValue = rawValues[progUrgentColIndex - 1];
+    }
+    archiveData[archUrgentColIndex - 1] = urgentValue;
+
+    // 転記元の位置が転記先と異なっていた場合、元の位置に入ってしまったゴミデータを消去
+    if (progUrgentColIndex > 0 && progUrgentColIndex !== archUrgentColIndex && progUrgentColIndex - 1 < archiveData.length) {
+      archiveData[progUrgentColIndex - 1] = '';
     }
   }
 
@@ -317,7 +335,6 @@ function processJinjerPaidLeave_internal() {
     if (stored) processedIds = JSON.parse(stored);
   } catch(e) {}
 
-  // ★ API上限回避の最強ストッパー: newer_than:1d で検索し、最新30件のみ取得
   const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" newer_than:1d`;
   const threads = GmailApp.search(query, 0, 30);
 
@@ -387,10 +404,6 @@ function processJinjerPaidLeave_internal() {
 
   console.log('【jinjer有給申請検知】処理が完了しました。');
 }
-
-// =================================================================
-// ▼ 有給申請シートの自動グレーアウト処理 ▼
-// =================================================================
 
 function onEdit_processPaidLeaveSheet(e) {
   if (!e || !e.range) return;

@@ -67,11 +67,10 @@ function part1_processEmailsToSheet() {
 
   // ★★★【究極修正】Gmailバグの原因「after:UNIX時間」を強制削除し、スレッド化対策で14日分取得 ★★★
   query = query.replace(/after:\d+/g, '').trim();
-  if (!query.includes('newer_than')) {
-      query += ' newer_than:14d'; 
-  }
+  query = query.replace(/newer_than:\w+/g, '').trim();
+  query += ' newer_than:14d'; 
   
-  // ★★★ ご指摘を受け、安全枠を 100スレッド に大幅拡張しました ★★★
+  // 第2引数、第3引数で「最新の100スレッドだけを取得」することでAPI上限を絶対に回避します
   const threads = GmailApp.search(query, 0, 100);
   
   if (threads.length === 0) { 
@@ -282,6 +281,10 @@ function part2_checkForAgencyUrgentApplications() {
   const archiveSheetName = typeof SHEET_NAME_ARCHIVE !== 'undefined' ? SHEET_NAME_ARCHIVE : '処理済み';
   const archiveSheet = spreadsheet.getSheetByName(archiveSheetName);
 
+  // ★追加: 動的に「直前応募通知」列の場所を取得する
+  const sourceUrgentColIdx = sourceSheet ? getColIndex_internal(sourceSheet, '直前応募通知') : -1;
+  const archiveUrgentColIdx = archiveSheet ? getColIndex_internal(archiveSheet, '直前応募通知') : -1;
+
   let processedLogKeys = []; 
   if (logSheet && logSheet.getLastRow() > 1) {
     const logValues = logSheet.getRange(2, 1, logSheet.getLastRow() - 1, 7).getValues();
@@ -308,7 +311,9 @@ function part2_checkForAgencyUrgentApplications() {
     });
   }
 
-  if (!destinationSheet) { return; }
+  // ★ シートが存在しなくてもエラーで落ちないようコメントアウト
+  // if (!destinationSheet) { return; } 
+  
   const statusColumnIndex = typeof AGENCY_STATUS_COLUMN_LETTER !== 'undefined' ? 
                             AGENCY_STATUS_COLUMN_LETTER.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0) + 1 : 13;
 
@@ -324,9 +329,10 @@ function part2_checkForAgencyUrgentApplications() {
 
   let combinedData = [];
 
+  // ★ 追加: それぞれのシートの列情報を item 内に持たせる
   if (sourceSheet && sourceSheet.getLastRow() >= 2) {
     const sData = sourceSheet.getRange(2, 1, sourceSheet.getLastRow() - 1, sourceSheet.getLastColumn()).getValues();
-    sData.forEach((row, i) => combinedData.push({ row: row, rowNumber: i + 2, sheet: sourceSheet }));
+    sData.forEach((row, i) => combinedData.push({ row: row, rowNumber: i + 2, sheet: sourceSheet, urgentColIdx: sourceUrgentColIdx }));
   }
 
   if (archiveSheet && archiveSheet.getLastRow() >= 2) {
@@ -347,7 +353,7 @@ function part2_checkForAgencyUrgentApplications() {
       if (taiouColIndex !== -1 && row[taiouColIndex]) {
         const tDate = new Date(row[taiouColIndex]);
         if (!isNaN(tDate.getTime()) && tDate.getTime() >= yesterdayMidnight.getTime()) {
-          combinedData.push({ row: row, rowNumber: i + 2, sheet: archiveSheet });
+          combinedData.push({ row: row, rowNumber: i + 2, sheet: archiveSheet, urgentColIdx: archiveUrgentColIdx });
         }
       }
     });
@@ -360,6 +366,13 @@ function part2_checkForAgencyUrgentApplications() {
     const row = item.row;
     const rowNumber = item.rowNumber;
     const currentSheet = item.sheet;
+    const urgentColIdx = item.urgentColIdx; // ★ 追加
+
+    // ★ 追加: 直前応募通知列に「済」やタイムスタンプが既に入っていれば、ここで絶対にスキップ（二重通知ブロック）
+    if (urgentColIdx > 0) {
+      const urgentStatus = String(row[urgentColIdx - 1]).trim();
+      if (urgentStatus !== '') continue; 
+    }
 
     const agencyName = row[0];
     const workDateObj = new Date(row[1]); 
@@ -399,12 +412,20 @@ function part2_checkForAgencyUrgentApplications() {
       let slackSuccess = sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
       let cwSuccess = sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
 
+      // ★ 追加: 送信アクションが起きた場合、直前応募通知列にタイムスタンプを打って蓋をする
+      if (slackSuccess || cwSuccess) {
+        if (urgentColIdx > 0) {
+          const timestamp = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd HH:mm:ss');
+          currentSheet.getRange(rowNumber, urgentColIdx).setValue(timestamp);
+        }
+      }
+
       if (slackSuccess && cwSuccess) {
         currentSheet.getRange(rowNumber, statusColumnIndex).setValue(processedStatusStr);
         const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd');
         const uniqueKey = `${agencyName}_${workDateStr}_${doctorName}`;
         const newRowData = [receivedDateStr, clinic, Utilities.formatDate(workDateObj, 'JST', 'yyyy年M月d日 (E)'), doctorName, workTime, uniqueKey, '紹介会社経由', agencyName];
-        destinationSheet.appendRow(newRowData);
+        if (destinationSheet) destinationSheet.appendRow(newRowData); // ★nullチェック追加
       } else if (slackSuccess && !cwSuccess) {
         currentSheet.getRange(rowNumber, statusColumnIndex).setValue('Slack済');
       } else if (!slackSuccess && cwSuccess) {
@@ -424,8 +445,8 @@ function part3_postToChatworkFromSheet() {
   const sourceSheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
   const destinationSheet = spreadsheet.getSheetByName(URGENT_SHEET_NAME);
   
-  if (!sourceSheet || !destinationSheet) { return; }
-  if (destinationSheet.getRange('A1').getValue() === '') {
+  if (!sourceSheet) { return; } // destinationSheetの必須チェックを外しました
+  if (destinationSheet && destinationSheet.getRange('A1').getValue() === '') {
     destinationSheet.getRange('A1:G1').setValues(sourceSheet.getRange('A1:G1').getValues());
   }
   
@@ -456,7 +477,7 @@ function part3_postToChatworkFromSheet() {
       if (slackSuccess && cwSuccess) {
         sourceSheet.getRange(rowNumber, 7).setValue(STATUS_POSTED);
         values[i][6] = STATUS_POSTED;
-        destinationSheet.appendRow(values[i]);
+        if (destinationSheet) destinationSheet.appendRow(values[i]); // ★nullチェック追加
       } else if (slackSuccess && !cwSuccess) {
         sourceSheet.getRange(rowNumber, 7).setValue(isNight ? 'Slack済(夜間)' : 'Slack済');
       } else if (!slackSuccess && cwSuccess) {
