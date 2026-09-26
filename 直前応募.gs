@@ -71,8 +71,8 @@ function part1_processEmailsToSheet() {
       query += ' newer_than:14d'; 
   }
   
-  // 第2引数、第3引数で「最新の30スレッドだけを取得」することでAPI上限を絶対に回避します
-  const threads = GmailApp.search(query, 0, 30);
+  // ★★★ ご指摘を受け、安全枠を 100スレッド に大幅拡張しました ★★★
+  const threads = GmailApp.search(query, 0, 100);
   
   if (threads.length === 0) { 
     console.log('対象のメールはありませんでした。'); 
