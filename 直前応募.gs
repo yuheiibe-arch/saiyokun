@@ -1,6 +1,5 @@
 /**
- * ★★★【修正】大司令塔から呼び出される内部関数に変更 ★★★
- * (executeAllProcesses -> executeAllProcesses_internal)
+ * ★★★ 大司令塔から呼び出される内部関数 ★★★
  */
 function executeAllProcesses_internal() {
   console.log("=============== 応募関連の自動化プロセスを開始 ===============");
@@ -11,21 +10,12 @@ function executeAllProcesses_internal() {
 }
 
 // =================================================================
-// ▼▼▼ part1 関連関数（民間医局くん連携・API最適化・重複すり抜け防止版） ▼▼▼
+// ▼▼▼ part1 関連関数（IDキャッシュ完全撤廃・重複すり抜け防止版） ▼▼▼
 // =================================================================
 
 function part1_processEmailsToSheet() {
   console.log("\n--- ステップ1: Gmailからの新規応募を処理中 ---");
   
-  // ★【追加】処理済みIDをプロパティから取得
-  const props = PropertiesService.getScriptProperties();
-  let processedIds = [];
-  try {
-    const stored = props.getProperty('URGENT_PROCESSED_IDS');
-    if (stored) processedIds = JSON.parse(stored);
-  } catch(e) {}
-  let isIdUpdated = false;
-
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
   if (!sheet) { console.error(`シート「${LOG_SHEET_NAME}」が見つかりません。`); return; }
@@ -61,16 +51,12 @@ function part1_processEmailsToSheet() {
   const tomorrowStr = `${Utilities.formatDate(tomorrow, 'JST', 'yyyy年M月d日')} (${getJapaneseDay(tomorrow)})`;
   const dayAfterTomorrowStr = `${Utilities.formatDate(dayAfterTomorrow, 'JST', 'yyyy年M月d日')} (${getJapaneseDay(dayAfterTomorrow)})`;
 
-  // ★★★【重要修正】ラベルによる検索除外を完全撤廃（スレッド吸収によるすり抜け防止）
   let query = GMAIL_QUERY_APPLY;
   query = query.replace(/-label:[^\s]+/g, '').trim();
-
-  // ★★★【究極修正】Gmailバグの原因「after:UNIX時間」を強制削除し、スレッド化対策で14日分取得 ★★★
   query = query.replace(/after:\d+/g, '').trim();
   query = query.replace(/newer_than:\w+/g, '').trim();
   query += ' newer_than:14d'; 
   
-  // 第2引数、第3引数で「最新の100スレッドだけを取得」することでAPI上限を絶対に回避します
   const threads = GmailApp.search(query, 0, 100);
   
   if (threads.length === 0) { 
@@ -84,21 +70,13 @@ function part1_processEmailsToSheet() {
 
   for (let i = 0; i < threads.length; i++) {
     const messages = allMessages[i];
-
+    
     for (const message of messages) {
-      const messageId = message.getId();
-      // ★【追加】既に処理したメールIDなら、何も読み込まずにスキップ（API消費ゼロ）
-      if (processedIds.includes(messageId)) continue;
-      processedIds.push(messageId);
-      isIdUpdated = true;
-
       const messageDate = message.getDate();
       const diffHours = (now - messageDate) / (1000 * 60 * 60);
       
-      // ★★★【重要】14日分取得した中で、直近24時間以内の「本当の最新メール」だけを処理するストッパー ★★★
-      if (diffHours > 24) {
-        continue; 
-      }
+      // ★ 24時間以内のメールのみを毎度再評価。IDのキャッシュは完全に削除しました。
+      if (diffHours > 24) continue; 
 
       processSingleMessage_internal(
         message, sheet, existingUniqueKeys,
@@ -107,14 +85,6 @@ function part1_processEmailsToSheet() {
         messageDate 
       );
     }
-  }
-  
-  // ★【追加】新しく処理したID群をプロパティに保存（最新500件のみ保持）
-  if (isIdUpdated) {
-    if (processedIds.length > 500) {
-      processedIds = processedIds.slice(-500);
-    }
-    props.setProperty('URGENT_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 
   try { flushSpecialCandidateNotifications(); } catch(e) {}
@@ -125,20 +95,16 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
   const body = message.getPlainBody();
   let processedFlag = false;
 
-  // ★★★【修正】医師名の抽出ロジックを強化（フォーマット揺れに完全対応）★★★
   let doctorName = "不明な医師";
   const docMatch1 = body.match(/^\s*([^\n\r]+?)\s*先生/);
   const docMatch2 = body.match(/(?:勤務医師名|応募医師名|医師氏名|医師名|氏名)[\s ]*[：:]?[\s ]*([^\n\r]+)/);
 
   if (docMatch2) {
-    // まずラベル付き（勤務医師名：など）を探す。見つかれば「先生」や余分な空白を除去
     doctorName = docMatch2[1].replace(/先生/g, '').trim();
   } else if (docMatch1) {
-    // ラベルが無く、いきなり「〇〇先生」で始まっている場合
     doctorName = docMatch1[1].trim();
   }
 
-  // ★★★【重要修正】改行なし・カッコ連続のフォーマットでも確実に抽出できるように正規表現を修正 ★★★
   const shiftRegex = /(\d{4}年\d{1,2}月\d{1,2}日\s*\([月火水木金土日]\))\s*(\d{1,2}:\d{2}\s*[～~〜\-]\s*\d{1,2}:\d{2})\s*\(([^)]+?)\)/g;
   let shiftMatch;
   let foundShift = false;
@@ -214,7 +180,8 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
   }
 
   const hour = receivedDateObj.getHours();
-  const isNightTime = (hour >= 17 || hour < 9);
+  // ★ 営業時間（07:00〜19:00）に基づく夜間判定の修正
+  const isNightTime = (hour >= 19 || hour < 7);
 
   let postStatus = '';
   if (isNightTime && (workDate === tomorrowStr || workDate === dayAfterTomorrowStr)) {
@@ -234,7 +201,7 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
 
 
 // =================================================================
-// ▼▼▼ 以下、part2 と part3 (Slack/CW 独立送信・ステータス分離版) ▼▼▼
+// ▼▼▼ 以下、part2 と part3 ▼▼▼
 // =================================================================
 
 function sendUrgentAlertToSlack_internal(roomId, message) {
@@ -281,7 +248,6 @@ function part2_checkForAgencyUrgentApplications() {
   const archiveSheetName = typeof SHEET_NAME_ARCHIVE !== 'undefined' ? SHEET_NAME_ARCHIVE : '処理済み';
   const archiveSheet = spreadsheet.getSheetByName(archiveSheetName);
 
-  // ★追加: 動的に「直前応募通知」列の場所を取得する
   const sourceUrgentColIdx = sourceSheet ? getColIndex_internal(sourceSheet, '直前応募通知') : -1;
   const archiveUrgentColIdx = archiveSheet ? getColIndex_internal(archiveSheet, '直前応募通知') : -1;
 
@@ -311,9 +277,6 @@ function part2_checkForAgencyUrgentApplications() {
     });
   }
 
-  // ★ シートが存在しなくてもエラーで落ちないようコメントアウト
-  // if (!destinationSheet) { return; } 
-  
   const statusColumnIndex = typeof AGENCY_STATUS_COLUMN_LETTER !== 'undefined' ? 
                             AGENCY_STATUS_COLUMN_LETTER.toUpperCase().charCodeAt(0) - 'A'.charCodeAt(0) + 1 : 13;
 
@@ -329,7 +292,6 @@ function part2_checkForAgencyUrgentApplications() {
 
   let combinedData = [];
 
-  // ★ 追加: それぞれのシートの列情報を item 内に持たせる
   if (sourceSheet && sourceSheet.getLastRow() >= 2) {
     const sData = sourceSheet.getRange(2, 1, sourceSheet.getLastRow() - 1, sourceSheet.getLastColumn()).getValues();
     sData.forEach((row, i) => combinedData.push({ row: row, rowNumber: i + 2, sheet: sourceSheet, urgentColIdx: sourceUrgentColIdx }));
@@ -366,9 +328,8 @@ function part2_checkForAgencyUrgentApplications() {
     const row = item.row;
     const rowNumber = item.rowNumber;
     const currentSheet = item.sheet;
-    const urgentColIdx = item.urgentColIdx; // ★ 追加
+    const urgentColIdx = item.urgentColIdx;
 
-    // ★ 追加: 直前応募通知列に「済」やタイムスタンプが既に入っていれば、ここで絶対にスキップ（二重通知ブロック）
     if (urgentColIdx > 0) {
       const urgentStatus = String(row[urgentColIdx - 1]).trim();
       if (urgentStatus !== '') continue; 
@@ -386,7 +347,9 @@ function part2_checkForAgencyUrgentApplications() {
 
     const workDateStr = Utilities.formatDate(workDateObj, 'JST', 'yyyy/MM/dd'); 
     const hour = receivedDate.getHours();
-    const isNightTime = (hour >= 17 || hour < 9);
+    
+    // ★ 営業時間（07:00〜19:00）に基づく夜間判定の修正
+    const isNightTime = (hour >= 19 || hour < 7);
 
     let isUrgent = false;
     let isNightUrgent = false;
@@ -412,7 +375,6 @@ function part2_checkForAgencyUrgentApplications() {
       let slackSuccess = sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
       let cwSuccess = sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
 
-      // ★ 追加: 送信アクションが起きた場合、直前応募通知列にタイムスタンプを打って蓋をする
       if (slackSuccess || cwSuccess) {
         if (urgentColIdx > 0) {
           const timestamp = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd HH:mm:ss');
@@ -425,7 +387,7 @@ function part2_checkForAgencyUrgentApplications() {
         const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd');
         const uniqueKey = `${agencyName}_${workDateStr}_${doctorName}`;
         const newRowData = [receivedDateStr, clinic, Utilities.formatDate(workDateObj, 'JST', 'yyyy年M月d日 (E)'), doctorName, workTime, uniqueKey, '紹介会社経由', agencyName];
-        if (destinationSheet) destinationSheet.appendRow(newRowData); // ★nullチェック追加
+        if (destinationSheet) destinationSheet.appendRow(newRowData);
       } else if (slackSuccess && !cwSuccess) {
         currentSheet.getRange(rowNumber, statusColumnIndex).setValue('Slack済');
       } else if (!slackSuccess && cwSuccess) {
@@ -445,7 +407,7 @@ function part3_postToChatworkFromSheet() {
   const sourceSheet = spreadsheet.getSheetByName(LOG_SHEET_NAME);
   const destinationSheet = spreadsheet.getSheetByName(URGENT_SHEET_NAME);
   
-  if (!sourceSheet) { return; } // destinationSheetの必須チェックを外しました
+  if (!sourceSheet) { return; } 
   if (destinationSheet && destinationSheet.getRange('A1').getValue() === '') {
     destinationSheet.getRange('A1:G1').setValues(sourceSheet.getRange('A1:G1').getValues());
   }
@@ -477,7 +439,7 @@ function part3_postToChatworkFromSheet() {
       if (slackSuccess && cwSuccess) {
         sourceSheet.getRange(rowNumber, 7).setValue(STATUS_POSTED);
         values[i][6] = STATUS_POSTED;
-        if (destinationSheet) destinationSheet.appendRow(values[i]); // ★nullチェック追加
+        if (destinationSheet) destinationSheet.appendRow(values[i]); 
       } else if (slackSuccess && !cwSuccess) {
         sourceSheet.getRange(rowNumber, 7).setValue(isNight ? 'Slack済(夜間)' : 'Slack済');
       } else if (!slackSuccess && cwSuccess) {
