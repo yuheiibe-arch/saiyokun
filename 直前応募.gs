@@ -10,7 +10,7 @@ function executeAllProcesses_internal() {
 }
 
 // =================================================================
-// ▼▼▼ part1 関連関数（IDキャッシュ完全撤廃・重複すり抜け防止版） ▼▼▼
+// ▼▼▼ part1 関連関数（HTMLクリーニング・重複すり抜け防止版） ▼▼▼
 // =================================================================
 
 function part1_processEmailsToSheet() {
@@ -75,7 +75,7 @@ function part1_processEmailsToSheet() {
       const messageDate = message.getDate();
       const diffHours = (now - messageDate) / (1000 * 60 * 60);
       
-      // ★ 24時間以内のメールのみを毎度再評価。IDのキャッシュは完全に削除しました。
+      // ★ 24時間以内のメールのみ対象。IDキャッシュを削除し、毎回正確に直前判定を行います
       if (diffHours > 24) continue; 
 
       processSingleMessage_internal(
@@ -92,8 +92,22 @@ function part1_processEmailsToSheet() {
 
 function processSingleMessage_internal(message, sheet, existingUniqueKeys, todayStr, tomorrowStr, dayAfterTomorrowStr, agencyData, agencyStatusColumnIndex, receivedDateObj) {
   const receivedDate = Utilities.formatDate(receivedDateObj, 'JST', 'yyyy/MM/dd');
-  const body = message.getPlainBody();
+  let body = message.getPlainBody();
   let processedFlag = false;
+
+  // ★ HTMLメールのCSSノイズによる文字欠落を完全に防ぐ強力なクリーニング処理
+  if (!body.includes("シフト応募日") || !body.includes("応募拠点名")) {
+    const rawHtml = message.getBody();
+    body = rawHtml
+      .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '') 
+      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') 
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>|<\/div>|<p>|<div>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/^[ \t]+/gm, '') 
+      .replace(/[\n\r]+/g, '\n'); 
+  }
 
   let doctorName = "不明な医師";
   const docMatch1 = body.match(/^\s*([^\n\r]+?)\s*先生/);
@@ -180,7 +194,7 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
   }
 
   const hour = receivedDateObj.getHours();
-  // ★ 営業時間（07:00〜19:00）に基づく夜間判定の修正
+  // ★ 営業時間（07:00〜19:00）に基づく夜間判定
   const isNightTime = (hour >= 19 || hour < 7);
 
   let postStatus = '';
@@ -239,7 +253,6 @@ function sendUrgentAlertToChatwork_internal(roomId, message) {
 }
 
 function part2_checkForAgencyUrgentApplications() {
-  console.log("--- ステップ2: 紹介会社シートの直前応募を処理中 ---");
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sourceSheet = spreadsheet.getSheetByName(AGENCY_SOURCE_SHEET_NAME);
   const destinationSheet = spreadsheet.getSheetByName(URGENT_SHEET_NAME);
@@ -348,7 +361,7 @@ function part2_checkForAgencyUrgentApplications() {
     const workDateStr = Utilities.formatDate(workDateObj, 'JST', 'yyyy/MM/dd'); 
     const hour = receivedDate.getHours();
     
-    // ★ 営業時間（07:00〜19:00）に基づく夜間判定の修正
+    // ★ 営業時間（07:00〜19:00）に基づく夜間判定
     const isNightTime = (hour >= 19 || hour < 7);
 
     let isUrgent = false;
@@ -398,7 +411,6 @@ function part2_checkForAgencyUrgentApplications() {
 }
 
 function part3_postToChatworkFromSheet() {
-  console.log("--- ステップ3: Chatworkへの投稿処理を処理中 ---");
   const STATUS_TO_POST = '投稿連携';
   const STATUS_TO_POST_NIGHT = '投稿連携(夜間)';
   const STATUS_POSTED = '投稿済み';
