@@ -83,23 +83,43 @@ function mainProcessEmails_internal() {
   const querySuffix = ` newer_than:1d`;
   const confirmQuerySuffix = ` newer_than:1d`;
 
-  processM3(querySuffix, confirmQuerySuffix, processedLabel);
+  // ★各処理を独立したtry-catchで囲み、一つがクラッシュしても後続を絶対に道連れにしない設計
+  try {
+    processM3(querySuffix, confirmQuerySuffix, processedLabel);
+  } catch(e) { console.error("M3エラー: " + e.message); }
   Utilities.sleep(1500);
-  processMStage(querySuffix, confirmQuerySuffix, processedLabel);
+
+  try {
+    processMStage(querySuffix, confirmQuerySuffix, processedLabel);
+  } catch(e) { console.error("MStageエラー: " + e.message); }
   Utilities.sleep(1500);
-  processMRT_Application(querySuffix, processedLabel);
+
+  try {
+    processMRT_Application(querySuffix, processedLabel);
+  } catch(e) { console.error("MRTエラー: " + e.message); }
   Utilities.sleep(1500);
-  processMinkanIkyoku_Application(querySuffix, processedLabel);
+
+  try {
+    processMinkanIkyoku_Application(querySuffix, processedLabel);
+  } catch(e) { console.error("民間医局エラー: " + e.message); }
   Utilities.sleep(1500);
-  processMediwel_Application(querySuffix, processedLabel);
+
+  try {
+    processMediwel_Application(querySuffix, processedLabel);
+  } catch(e) { console.error("メディウェルエラー: " + e.message); }
   Utilities.sleep(1500);
   
-  if (typeof checkAtmsEmails_internal === 'function') {
-    checkAtmsEmails_internal();
-  }
+  try {
+    if (typeof checkAtmsEmails_internal === 'function') {
+      checkAtmsEmails_internal();
+    }
+  } catch(e) { console.error("ATMSエラー: " + e.message); }
   
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  sortSheetByDate_internal(ss.getSheetByName(SHEET_NAME_PROGRESS));
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    sortSheetByDate_internal(ss.getSheetByName(SHEET_NAME_PROGRESS));
+  } catch(e) { console.error("ソートエラー: " + e.message); }
+
   Logger.log("本番処理：メール処理が完了しました。");
 }
 
@@ -395,6 +415,7 @@ function processJinjerPaidLeave_internal() {
   }
 
   if (isUpdated) {
+    // 200件で1.99KBと安全圏のため変更なし
     if (processedIds.length > 200) {
       processedIds = processedIds.slice(-200);
     }

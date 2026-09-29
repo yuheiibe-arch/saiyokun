@@ -4,6 +4,7 @@
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // ★修正内容：スレッド巻き込みによるすり抜けを防止するためラベル除外条件を撤廃
 // ★追加修正：API超節約設計（Message-IDキャッシュによる既読メールのスキップ処理を実装）
+// ★修正内容：キャッシュ容量オーバー防止のため保持件数を250件に変更
 // =================================================================
 
 function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
@@ -402,10 +403,10 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
     }
   }
 
-  // ★【追加】新しく処理したID群をプロパティに保存（最新500件のみ保持）
+  // ★【追加】新しく処理したID群をプロパティに保存（安全のため最新250件のみ保持）
   if (isIdUpdated) {
-    if (processedIds.length > 500) {
-      processedIds = processedIds.slice(-500);
+    if (processedIds.length > 250) {
+      processedIds = processedIds.slice(-250);
     }
     props.setProperty('M3_PROCESSED_IDS', JSON.stringify(processedIds));
   }
