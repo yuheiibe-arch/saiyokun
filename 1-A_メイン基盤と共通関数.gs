@@ -263,51 +263,50 @@ function getColIndex_internal(sheet, headerName) {
   return idx !== -1 ? idx + 1 : -1;
 }
 
+// =================================================================
+// ▼▼▼ 完全動的マッピング版 appendRowToArchive ▼▼▼
+// =================================================================
 function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
-  const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
-  const progSaiyoColIndex = sheet ? getColIndex_internal(sheet, '採用可否') : -1;
-  const dateColIndex = getColIndex_internal(archiveSheet, '勤務希望日'); 
-
-  // ★追加: 「直前応募通知」の列位置を動的に特定
-  const archUrgentColIndex = getColIndex_internal(archiveSheet, '直前応募通知');
-  const progUrgentColIndex = sheet ? getColIndex_internal(sheet, '直前応募通知') : -1;
-
-  let archiveData = new Array(archiveSheet.getLastColumn()).fill('');
-  for (let i = 0; i < rawValues.length; i++) {
-    if (i < archiveData.length) archiveData[i] = rawValues[i];
-  }
+  // 両方のシートのヘッダー（1行目）を取得
+  const archHeaders = archiveSheet.getRange(1, 1, 1, archiveSheet.getLastColumn()).getValues()[0];
+  const progHeaders = sheet ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] : [];
   
-  if (archSaiyoColIndex > 0) {
-    archiveData[archSaiyoColIndex - 1] = saiyoStatus;
-    if (progSaiyoColIndex > 0 && progSaiyoColIndex !== archSaiyoColIndex && progSaiyoColIndex - 1 < archiveData.length) {
-      archiveData[progSaiyoColIndex - 1] = ''; 
+  // 転記先（アーカイブ）の列数分の空配列を用意
+  let archiveData = new Array(archHeaders.length).fill('');
+  
+  // 完全動的マッピング：ヘッダー名で照合してデータを転記
+  for (let i = 0; i < archHeaders.length; i++) {
+    const headerName = String(archHeaders[i]).trim();
+    if (!headerName) continue;
+    
+    if (headerName === '採用可否') {
+      // 採用可否の列には、引数で渡されたステータスを強制セット
+      archiveData[i] = saiyoStatus;
+    } else {
+      // 進行シートに同じ名前のヘッダーがあれば、そのデータを引っ張ってくる
+      const progIdx = progHeaders.indexOf(headerName);
+      if (progIdx !== -1 && progIdx < rawValues.length) {
+        archiveData[i] = rawValues[progIdx];
+      }
     }
   }
 
-  // ★追加: シート移動時に「直前応募通知」の印（タイムスタンプ等）を正確に引き継ぐ
-  if (archUrgentColIndex > 0) {
-    let urgentValue = '';
-    if (progUrgentColIndex > 0 && progUrgentColIndex - 1 < rawValues.length) {
-       urgentValue = rawValues[progUrgentColIndex - 1];
-    }
-    archiveData[archUrgentColIndex - 1] = urgentValue;
-
-    // 転記元の位置が転記先と異なっていた場合、元の位置に入ってしまったゴミデータを消去
-    if (progUrgentColIndex > 0 && progUrgentColIndex !== archUrgentColIndex && progUrgentColIndex - 1 < archiveData.length) {
-      archiveData[progUrgentColIndex - 1] = '';
-    }
-  }
-
+  // 行を追加
   archiveSheet.appendRow(archiveData);
   const insertedRow = archiveSheet.getLastRow();
   archiveSheet.getRange(insertedRow, 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
 
+  // 背景色もヘッダー名から動的に位置を特定して塗る
+  const archSaiyoColIndex = archHeaders.indexOf('採用可否') + 1;
   if (archSaiyoColIndex > 0) {
     const bgCell = archiveSheet.getRange(insertedRow, archSaiyoColIndex);
     if (saiyoStatus === '採用') bgCell.setBackground('#b6d7a8');
     else if (saiyoStatus === '不採用') bgCell.setBackground('#ffe599');
+    else bgCell.setBackground(null); 
   }
 
+  // 日付順ソートも動的
+  const dateColIndex = archHeaders.indexOf('勤務希望日') + 1;
   if (insertedRow > 2 && dateColIndex > 0) {
     const sortRange = archiveSheet.getRange(2, 1, insertedRow - 1, archiveSheet.getLastColumn());
     sortRange.sort({column: dateColIndex, ascending: true});
