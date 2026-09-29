@@ -51,11 +51,14 @@ function part1_processEmailsToSheet() {
   const tomorrowStr = `${Utilities.formatDate(tomorrow, 'JST', 'yyyy年M月d日')} (${getJapaneseDay(tomorrow)})`;
   const dayAfterTomorrowStr = `${Utilities.formatDate(dayAfterTomorrow, 'JST', 'yyyy年M月d日')} (${getJapaneseDay(dayAfterTomorrow)})`;
 
-  let query = GMAIL_QUERY_APPLY;
-  query = query.replace(/-label:[^\s]+/g, '').trim();
-  query = query.replace(/after:\d+/g, '').trim();
-  query = query.replace(/newer_than:\w+/g, '').trim();
-  query += ' newer_than:14d'; 
+  let baseQuery = GMAIL_QUERY_APPLY;
+  baseQuery = baseQuery.replace(/-label:[^\s]+/g, '').trim();
+  baseQuery = baseQuery.replace(/after:\d+/g, '').trim();
+  baseQuery = baseQuery.replace(/newer_than:\w+/g, '').trim();
+  
+  // ★修正箇所：クエリの組み立て方を安全な形（全体をカッコでくくってからラベル除外や期間指定を当てる）に修正
+  const excludeLabel = typeof PROCESSED_LABEL !== 'undefined' ? `-label:${PROCESSED_LABEL}` : '';
+  const query = `(${baseQuery} OR "募集シフトへの応募がありました") ${excludeLabel} newer_than:14d`; 
   
   const threads = GmailApp.search(query, 0, 100);
   
@@ -70,20 +73,30 @@ function part1_processEmailsToSheet() {
 
   for (let i = 0; i < threads.length; i++) {
     const messages = allMessages[i];
+    const thread = threads[i];
+    let threadHasNewData = false;
     
     for (const message of messages) {
       const messageDate = message.getDate();
       const diffHours = (now - messageDate) / (1000 * 60 * 60);
       
-      // ★ 24時間以内のメールのみ対象。IDキャッシュを削除し、毎回正確に直前判定を行います
       if (diffHours > 24) continue; 
 
-      processSingleMessage_internal(
+      const isProcessed = processSingleMessage_internal(
         message, sheet, existingUniqueKeys,
         todayStr, tomorrowStr, dayAfterTomorrowStr,
         agencyData, agencyStatusColumnIndex,
         messageDate 
       );
+      if(isProcessed) threadHasNewData = true;
+    }
+    
+    // ★追加：処理が終わったスレッドには「処理済みラベル」を付けて、次回の検索（OR検索）から確実に除外する
+    if (threadHasNewData && typeof PROCESSED_LABEL !== 'undefined') {
+       try {
+         const label = GmailApp.getUserLabelByName(PROCESSED_LABEL) || GmailApp.createLabel(PROCESSED_LABEL);
+         thread.addLabel(label);
+       } catch(e) { console.error("ラベル付与エラー: " + e.message); }
     }
   }
 
@@ -92,22 +105,18 @@ function part1_processEmailsToSheet() {
 
 function processSingleMessage_internal(message, sheet, existingUniqueKeys, todayStr, tomorrowStr, dayAfterTomorrowStr, agencyData, agencyStatusColumnIndex, receivedDateObj) {
   const receivedDate = Utilities.formatDate(receivedDateObj, 'JST', 'yyyy/MM/dd');
-  let body = message.getPlainBody();
   let processedFlag = false;
 
-  // ★ HTMLメールのCSSノイズによる文字欠落を完全に防ぐ強力なクリーニング処理
-  if (!body.includes("シフト応募日") || !body.includes("応募拠点名")) {
-    const rawHtml = message.getBody();
-    body = rawHtml
-      .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '') 
-      .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') 
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>|<\/div>|<p>|<div>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/^[ \t]+/gm, '') 
-      .replace(/[\n\r]+/g, '\n'); 
-  }
+  const rawHtml = message.getBody();
+  let body = rawHtml
+    .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '') 
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '') 
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>|<\/div>|<p>|<div>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/^[ \t]+/gm, '') 
+    .replace(/[\n\r]+/g, '\n'); 
 
   let doctorName = "不明な医師";
   const docMatch1 = body.match(/^\s*([^\n\r]+?)\s*先生/);
@@ -161,6 +170,7 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
   const doctorNameNormalized = doctorName.replace(/\s+/g, '');
   const uniqueKey = `${workDate}_${clinic}_${doctorName}_${workTime}`;
 
+  // ★重要：既存キーとの重複判定。これによりシートに既にあるものは二重投稿されない
   if (existingUniqueKeys.includes(uniqueKey) || doctorName.includes('テスト') || clinic.toLowerCase().includes('test')) {
     return ''; 
   }
@@ -194,7 +204,6 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
   }
 
   const hour = receivedDateObj.getHours();
-  // ★ 営業時間（07:00〜19:00）に基づく夜間判定
   const isNightTime = (hour >= 19 || hour < 7);
 
   let postStatus = '';
@@ -361,7 +370,6 @@ function part2_checkForAgencyUrgentApplications() {
     const workDateStr = Utilities.formatDate(workDateObj, 'JST', 'yyyy/MM/dd'); 
     const hour = receivedDate.getHours();
     
-    // ★ 営業時間（07:00〜19:00）に基づく夜間判定
     const isNightTime = (hour >= 19 || hour < 7);
 
     let isUrgent = false;
