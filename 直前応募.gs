@@ -51,15 +51,8 @@ function part1_processEmailsToSheet() {
   const tomorrowStr = `${Utilities.formatDate(tomorrow, 'JST', 'yyyy年M月d日')} (${getJapaneseDay(tomorrow)})`;
   const dayAfterTomorrowStr = `${Utilities.formatDate(dayAfterTomorrow, 'JST', 'yyyy年M月d日')} (${getJapaneseDay(dayAfterTomorrow)})`;
 
-  let baseQuery = GMAIL_QUERY_APPLY;
-  baseQuery = baseQuery.replace(/-label:[^\s]+/g, '').trim();
-  baseQuery = baseQuery.replace(/after:\d+/g, '').trim();
-  baseQuery = baseQuery.replace(/newer_than:\w+/g, '').trim();
-  
-  // ★修正箇所：クエリの組み立て方を安全な形（全体をカッコでくくってからラベル除外や期間指定を当てる）に修正
-  const excludeLabel = typeof PROCESSED_LABEL !== 'undefined' ? `-label:${PROCESSED_LABEL}` : '';
-  const query = `(${baseQuery} OR "募集シフトへの応募がありました") ${excludeLabel} newer_than:14d`; 
-  
+  // ★全体設定のクエリをそのまま使用（システムメールは巨大スレッドになるため、ラベルで除外検索すると新しいメールが検知できなくなる仕様を回避）
+  const query = GMAIL_QUERY_APPLY;
   const threads = GmailApp.search(query, 0, 100);
   
   if (threads.length === 0) { 
@@ -70,16 +63,19 @@ function part1_processEmailsToSheet() {
   
   const now = new Date();
   const allMessages = GmailApp.getMessagesForThreads(threads);
+  const labelName = typeof PROCESSED_LABEL_APPLY !== 'undefined' ? PROCESSED_LABEL_APPLY : '処理済み-医師シフト応募';
 
   for (let i = 0; i < threads.length; i++) {
     const messages = allMessages[i];
     const thread = threads[i];
     let threadHasNewData = false;
     
+    // スレッド内のすべてのメールを1件ずつ確認
     for (const message of messages) {
       const messageDate = message.getDate();
       const diffHours = (now - messageDate) / (1000 * 60 * 60);
       
+      // 過去24時間以内のメールのみ対象
       if (diffHours > 24) continue; 
 
       const isProcessed = processSingleMessage_internal(
@@ -88,15 +84,15 @@ function part1_processEmailsToSheet() {
         agencyData, agencyStatusColumnIndex,
         messageDate 
       );
-      if(isProcessed) threadHasNewData = true;
+      if (isProcessed) threadHasNewData = true;
     }
     
-    // ★追加：処理が終わったスレッドには「処理済みラベル」を付けて、次回の検索（OR検索）から確実に除外する
-    if (threadHasNewData && typeof PROCESSED_LABEL !== 'undefined') {
+    // 処理が終わったスレッドには「直前応募用」の処理済みラベルを付ける
+    if (threadHasNewData) {
        try {
-         const label = GmailApp.getUserLabelByName(PROCESSED_LABEL) || GmailApp.createLabel(PROCESSED_LABEL);
+         const label = GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
          thread.addLabel(label);
-       } catch(e) { console.error("ラベル付与エラー: " + e.message); }
+       } catch(e) {}
     }
   }
 
@@ -107,6 +103,7 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
   const receivedDate = Utilities.formatDate(receivedDateObj, 'JST', 'yyyy/MM/dd');
   let processedFlag = false;
 
+  // ★どんなメールでも常にHTMLからクリーンテキストを生成する（ノイズ完全排除）
   const rawHtml = message.getBody();
   let body = rawHtml
     .replace(/<head[^>]*>[\s\S]*?<\/head>/gi, '') 
@@ -170,7 +167,6 @@ function processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryDat
   const doctorNameNormalized = doctorName.replace(/\s+/g, '');
   const uniqueKey = `${workDate}_${clinic}_${doctorName}_${workTime}`;
 
-  // ★重要：既存キーとの重複判定。これによりシートに既にあるものは二重投稿されない
   if (existingUniqueKeys.includes(uniqueKey) || doctorName.includes('テスト') || clinic.toLowerCase().includes('test')) {
     return ''; 
   }
