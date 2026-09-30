@@ -46,7 +46,8 @@ function executeAllGmailProcesses() {
           break; // ループを抜け出して大司令塔を終了
         }
       }
-      Utilities.sleep(1500); 
+      // ★修正：タスク間の休憩を長めに取る（APIブロック回避）
+      Utilities.sleep(3000); 
     }
 
   } finally {
