@@ -40,15 +40,15 @@ const CHECKBOX_COLUMN = 12; // ★K列(11)からL列(12)に変更
 
 // (直前応募：part1用)
 const PROCESSED_LABEL_APPLY = '処理済み-医師シフト応募';
-// ★★★【重要修正】Gmailの検索仕様に合致するよう、カッコと記号を外してシンプルにしました ★★★
-const GMAIL_QUERY_APPLY = `subject:"医師シフト応募通知" OR "募集シフトへの応募がありました" newer_than:1d`;
+// ★★★【修正】カッコで括り、両方のOR条件に newer_than:1d が効くように修正
+const GMAIL_QUERY_APPLY = `(subject:"医師シフト応募通知" OR "募集シフトへの応募がありました") newer_than:1d`;
 
 // (キャンセル・時間外用)
 const PROCESSED_LABEL_TIMEGAI = '処理済み-時間外着信';
 const PROCESSED_LABEL_CANCEL = '処理済み-キャンセル'; 
-// ★★★【重要修正】致命的エラーを回避するため、多重カッコを外してシンプルにしました ★★★
-const GMAIL_QUERY_CANCEL = `(subject:"勤務2週間以内のキャンセル申請" OR subject:"勤務3日以内のキャンセル申請") -label:${PROCESSED_LABEL_CANCEL}`; 
-const GMAIL_QUERY_TIMEGAI = `subject:"時間外応答がありました" OR subject:"不在着信がありました"`; 
+// ★★★【修正】致命的エラーを回避するため、多重カッコと -label: 除外を完全に撤廃
+const GMAIL_QUERY_CANCEL = `(subject:"勤務2週間以内のキャンセル申請" OR subject:"勤務3日以内のキャンセル申請")`; 
+const GMAIL_QUERY_TIMEGAI = `(subject:"時間外応答がありました" OR subject:"不在着信がありました")`; 
 const GMAIL_SENDER_EXCLUDE = 'no-reply-staging';
 
 // --- 6. 紹介会社シート関連（直前応募：part2用）---

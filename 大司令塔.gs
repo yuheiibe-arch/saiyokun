@@ -3,19 +3,19 @@
 // =============================================================
 
 /**
- * ★★★ 大司令塔 ★★★
+ * ★★★ 大司令塔（新バージョン） ★★★
  * 全てのGmail処理をこの関数で実行する
- * 【トリガー設定】：この関数を「5分おき」または「10分おき」に設定する
+ * 【トリガー設定】：あなたのアカウントで、この関数（executeAllGmailProcesses_v2）を「5分おき」または「10分おき」に設定する
  */
-function executeAllGmailProcesses() {
+function executeAllGmailProcesses_v2() {
   const lock = LockService.getUserLock();
   if (!lock.tryLock(30000)) { 
-    console.log('executeAllGmailProcesses: 他のプロセスが実行中のためスキップしました。');
+    console.log('executeAllGmailProcesses_v2: 他のプロセスが実行中のためスキップしました。');
     return; 
   }
   
   const startTime = new Date();
-  console.log('=============== 【大司令塔】プロセスを開始 ===============');
+  console.log('=============== 【大司令塔 v2】プロセスを開始 ===============');
   
   try {
     // ★ 8つの処理を配列化して一括管理（コードがスッキリし、途中停止させやすくなります）
@@ -55,7 +55,7 @@ function executeAllGmailProcesses() {
     lock.releaseLock();
     const endTime = new Date();
     const duration = (endTime.getTime() - startTime.getTime()) / 1000;
-    console.log(`\n=============== 【大司令塔】プロセスが完了（所要時間: ${duration}秒）===============`);
+    console.log(`\n=============== 【大司令塔 v2】プロセスが完了（所要時間: ${duration}秒）===============`);
   }
 }
 
