@@ -55,7 +55,8 @@ function checkInformalCancel_internal() {
     'gemini-notes@google.com', 
     'asiantms.com', 
     'mediwel.net',  
-    'nicho.co.jp',  
+    'nicho.co.jp', 
+    'medrt.com', 
     userEmail
   ];
 

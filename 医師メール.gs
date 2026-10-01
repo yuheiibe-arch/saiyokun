@@ -223,10 +223,12 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('entry@') || 
       fromLower.includes('sagpj') ||
       fromLower.includes('mfl-info@') ||         
-      fromLower.includes('google.com') ||     
+      fromLower.includes('google.com') ||
+      fromLower.includes('carenet.co.jp') ||  
       fromLower.includes('nicho.co.jp') ||     
       fromLower.includes('alerts@') ||           
-      fromLower.includes('mailer-daemon') ||     
+      fromLower.includes('mailer-daemon') || 
+      fromLower.includes('infomart.co.jp') ||     
       fromLower.includes('minderu.com') ||    
       fromLower.includes('wolterskluwer.com') || // ★ ここに wolterskluwer.com を追加しました
       subjectLower.includes('セキュリティ') ||     
