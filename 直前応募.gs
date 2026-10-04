@@ -363,6 +363,12 @@ function part2_checkForAgencyUrgentApplications() {
 
     if (isNaN(workDateObj.getTime())) continue;
 
+    // ★★★【追加】着信日から24時間以上経過している古いデータは絶対に通知しないストッパー ★★★
+    const nowTime = new Date().getTime();
+    if ((nowTime - receivedDate.getTime()) > (24 * 60 * 60 * 1000)) {
+      continue; 
+    }
+
     const workDateStr = Utilities.formatDate(workDateObj, 'JST', 'yyyy/MM/dd'); 
     const hour = receivedDate.getHours();
     

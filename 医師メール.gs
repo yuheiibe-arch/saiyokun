@@ -225,6 +225,7 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('mfl-info@') ||         
       fromLower.includes('google.com') ||
       fromLower.includes('carenet.co.jp') ||  
+      fromLower.includes('dneo.medical-res.co.jp') ||  
       fromLower.includes('nicho.co.jp') ||     
       fromLower.includes('alerts@') ||           
       fromLower.includes('mailer-daemon') || 

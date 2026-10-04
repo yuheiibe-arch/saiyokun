@@ -4,6 +4,7 @@
 // =================================================================
 
 function onEdit_processProgressSheet(e) {
+  // トリガーオブジェクト(e)がない、または意図しない範囲の場合は即終了
   if (!e || !e.range) return;
   const range = e.range;
   const sheet = e.source.getActiveSheet();
@@ -12,6 +13,7 @@ function onEdit_processProgressSheet(e) {
 
   const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
 
+  // 「採用可否」列の編集時の色付け処理
   if (saiyoColIndex > 0 && range.getColumn() === saiyoColIndex) {
     const val = range.getValue();
     if (val === '採用') range.setBackground('#b6d7a8');
@@ -20,7 +22,10 @@ function onEdit_processProgressSheet(e) {
     return;
   }
 
-  if (range.getColumn() !== CHECKBOX_COLUMN || range.getValue() !== true) return;
+  // ★重複・増殖防止ストッパー1：
+  // 編集されたのがチェックボックスの列ではない、または「TRUE(チェックを入れた)」以外の場合は完全に無視する。
+  // （行削除や色変更などの余計なイベントでonEditが連鎖発動するのを防ぐ）
+  if (range.getColumn() !== CHECKBOX_COLUMN || String(e.value).toUpperCase() !== "TRUE") return;
 
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
@@ -29,12 +34,15 @@ function onEdit_processProgressSheet(e) {
   const ui = SpreadsheetApp.getUi();
   const doctorColIndex = getColIndex_internal(sheet, '医師名');
   const rowIndex = range.getRow();
+  
+  // 行データを取得
   const rowData = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
 
   const agency = String(rowData[0]).trim();
   const saiyoStatus = saiyoColIndex > 0 ? String(rowData[saiyoColIndex - 1]).trim() : '';
   const doctorName = doctorColIndex > 0 ? String(rowData[doctorColIndex - 1]).trim() : '';
 
+  // エラーチェック（エラー時はチェックを外す）
   if (!saiyoStatus) {
     ui.alert('【エラー】', '採用可否が選択されていません。採用または不採用を選択してください。', ui.ButtonSet.OK);
     range.setValue(false);
@@ -51,19 +59,21 @@ function onEdit_processProgressSheet(e) {
     return;
   }
 
-  // ★行ズレ巻き込み事故防止：0秒ロックで重複を弾く
+  // ★重複・増殖防止ストッパー2：スクリプトの同時実行を防ぐロック
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(0)) {
-    return;
+  if (!lock.tryLock(1000)) {
+    return; // 既に処理が動いている場合はスキップ
   }
 
   try {
-    // ★行ズレ巻き込み事故防止：処理対象の行に本当にチェックが入っているか最終確認
+    // ★重複・増殖防止ストッパー3：
+    // シート上の値が本当にtrueか再確認し、直ちにfalseにして後続の暴走を止める
     if (sheet.getRange(rowIndex, CHECKBOX_COLUMN).getValue() !== true) {
       return; 
     }
+    sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
 
-    rowData[CHECKBOX_COLUMN - 1] = new Date();
+    // アーカイブへ移動し、元の行を削除
     appendRowToArchive(sheet, archiveSheet, rowData, saiyoStatus);
     safeDeleteRow(sheet, rowIndex);
   } catch (error) {
@@ -79,11 +89,9 @@ function mainProcessEmails_internal() {
   let processedLabel = GmailApp.getUserLabelByName(PROCESSED_LABEL);
   if (!processedLabel) processedLabel = GmailApp.createLabel(PROCESSED_LABEL);
   
-  // ★ バグの元凶「after:UNIX時間」を完全撤廃。安全な newer_than:1d に固定
   const querySuffix = ` newer_than:1d`;
   const confirmQuerySuffix = ` newer_than:1d`;
 
-  // ★各処理を独立したtry-catchで囲み、一つがクラッシュしても後続を絶対に道連れにしない設計
   try {
     processM3(querySuffix, confirmQuerySuffix, processedLabel);
   } catch(e) { console.error("M3エラー: " + e.message); }
@@ -284,29 +292,42 @@ function getColIndex_internal(sheet, headerName) {
 }
 
 // =================================================================
-// ▼▼▼ 完全動的マッピング版 appendRowToArchive ▼▼▼
+// ▼▼▼ 完全動的マッピング版 appendRowToArchive (バグ修正・打刻強化版) ▼▼▼
 // =================================================================
 function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
-  // 両方のシートのヘッダー（1行目）を取得
   const archHeaders = archiveSheet.getRange(1, 1, 1, archiveSheet.getLastColumn()).getValues()[0];
   const progHeaders = sheet ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] : [];
   
-  // 転記先（アーカイブ）の列数分の空配列を用意
   let archiveData = new Array(archHeaders.length).fill('');
+  const nowStr = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd HH:mm:ss');
   
-  // 完全動的マッピング：ヘッダー名で照合してデータを転記
   for (let i = 0; i < archHeaders.length; i++) {
-    const headerName = String(archHeaders[i]).trim();
+    const headerName = String(archHeaders[i]).replace(/\s+/g, '').trim(); 
     if (!headerName) continue;
     
-    if (headerName === '採用可否') {
-      // 採用可否の列には、引数で渡されたステータスを強制セット
+    // ★修正1：対応時間の列に確実にタイムスタンプを強制打刻する
+    if (headerName.includes('対応時間') || headerName.includes('処理時間')) {
+      archiveData[i] = nowStr;
+      continue;
+    }
+    
+    if (headerName.includes('採用可否')) {
       archiveData[i] = saiyoStatus;
-    } else {
-      // 進行シートに同じ名前のヘッダーがあれば、そのデータを引っ張ってくる
-      const progIdx = progHeaders.indexOf(headerName);
-      if (progIdx !== -1 && progIdx < rawValues.length) {
-        archiveData[i] = rawValues[progIdx];
+      continue;
+    }
+
+    // ★修正2：ヘッダー名の微妙な違い（改行や空白）による抜け落ちを防ぐ
+    let found = false;
+    for (let j = 0; j < progHeaders.length; j++) {
+      const pHeader = String(progHeaders[j]).replace(/\s+/g, '').trim();
+      
+      // ヘッダーが完全一致するか、「識別番号」というキーワードが含まれていればOKとする
+      if (pHeader === headerName || (headerName.includes('識別番号') && pHeader.includes('識別番号'))) {
+        if (j < rawValues.length) {
+          archiveData[i] = rawValues[j];
+        }
+        found = true;
+        break;
       }
     }
   }
@@ -316,8 +337,7 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
   const insertedRow = archiveSheet.getLastRow();
   archiveSheet.getRange(insertedRow, 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
 
-  // 背景色もヘッダー名から動的に位置を特定して塗る
-  const archSaiyoColIndex = archHeaders.indexOf('採用可否') + 1;
+  const archSaiyoColIndex = archHeaders.findIndex(h => String(h).includes('採用可否')) + 1;
   if (archSaiyoColIndex > 0) {
     const bgCell = archiveSheet.getRange(insertedRow, archSaiyoColIndex);
     if (saiyoStatus === '採用') bgCell.setBackground('#b6d7a8');
@@ -325,8 +345,7 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
     else bgCell.setBackground(null); 
   }
 
-  // 日付順ソートも動的
-  const dateColIndex = archHeaders.indexOf('勤務希望日') + 1;
+  const dateColIndex = archHeaders.findIndex(h => String(h).includes('勤務希望日')) + 1;
   if (insertedRow > 2 && dateColIndex > 0) {
     const sortRange = archiveSheet.getRange(2, 1, insertedRow - 1, archiveSheet.getLastColumn());
     sortRange.sort({column: dateColIndex, ascending: true});
@@ -415,7 +434,6 @@ function processJinjerPaidLeave_internal() {
   }
 
   if (isUpdated) {
-    // 200件で1.99KBと安全圏のため変更なし
     if (processedIds.length > 200) {
       processedIds = processedIds.slice(-200);
     }

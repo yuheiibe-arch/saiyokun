@@ -32,10 +32,19 @@ function checkInformalCancel_internal() {
     return;
   }
 
-  // ★★★【修正】スレッド巻き込みによる見落としを防ぐため、-label: の除外を撤廃
+  // ★★★【改善】除外する送信元をGmailの検索クエリ（-from:）に直接組み込み、GASでの無駄なループを排除
+  const userEmail = Session.getActiveUser().getEmail();
+  const excludeDomains = [
+    'caps365.jp', 'mns.jp', 'mnys.jp', 'm3career.com', 'gemini-notes@google.com', 
+    'asiantms.com', 'mediwel.net', 'nicho.co.jp', 'medrt.com', userEmail
+  ];
+  const excludeQuery = excludeDomains.map(d => `-from:${d}`).join(' ');
+
   const timeQuery = `(${timeKeywords.join(' OR ')})`;
   const actionQuery = `(${actionKeywords.join(' OR ')})`;
-  const gmailQuery = `${timeQuery} ${actionQuery} newer_than:14d`;
+  
+  // ★★★【改善】検索期間を14日から実運用レベルの2日間に短縮（過去の巨大なメール群の読み込みを防止）
+  const gmailQuery = `${timeQuery} ${actionQuery} ${excludeQuery} newer_than:2d`;
 
   console.log(`Gmail検索クエリ: ${gmailQuery}`);
 
@@ -46,20 +55,6 @@ function checkInformalCancel_internal() {
     existingMessageIDs = logSheet.getRange(2, 7, logLastRow - 1, 1).getValues().flat();
   }
 
-  const userEmail = Session.getActiveUser().getEmail();
-  const excludeSenders = [
-    'caps365.jp', 
-    'mns.jp', 
-    'mnys.jp', 
-    'm3career.com', 
-    'gemini-notes@google.com', 
-    'asiantms.com', 
-    'mediwel.net',  
-    'nicho.co.jp', 
-    'medrt.com', 
-    userEmail
-  ];
-
   const timeRegex = new RegExp(timeKeywords.join('|'), 'i');
   const actionRegex = new RegExp(actionKeywords.join('|'), 'i');
   const now = new Date();
@@ -67,7 +62,6 @@ function checkInformalCancel_internal() {
   const threads = GmailApp.search(gmailQuery);
   if (threads.length === 0) { console.log('対象のメールはありませんでした。'); return; }
 
-  // ★ API通信1回で全メッセージを一括取得
   const allMessages = GmailApp.getMessagesForThreads(threads);
 
   for (let i = 0; i < threads.length; i++) {
@@ -81,18 +75,7 @@ function checkInformalCancel_internal() {
       if (existingMessageIDs.includes(messageId)) continue; 
 
       const receivedDate = message.getDate();
-      
-      // ★ 14日分取得した中で、直近24時間以内の「本当の最新メール」だけを処理するストッパー
       if ((now.getTime() - receivedDate.getTime()) / (1000 * 60 * 60) > 24) continue; 
-
-      const from = message.getFrom();
-      const isInternal = excludeSenders.some(senderKeyword => from.includes(senderKeyword));
-      
-      if (isInternal) {
-        console.log(`[メールID: ${messageId}] 除外対象の送信元のためスキップ: ${from}`);
-        processedThisThread = true;
-        continue; 
-      }
 
       const fullBody = message.getPlainBody();
       const regexQuoteMarkers = /\n(>|On .*> wrote:|.* <.*@.*> wrote:|\d{4}年\d{1,2}月\d{1,2}日.*:|From: .*|Sent: .*|-{3,}|={3,}|#{3,}|_+\s*$)/i;
@@ -102,7 +85,6 @@ function checkInformalCancel_internal() {
       const hasActionKeyword = actionRegex.test(bodyOnly);
 
       if (!hasTimeKeyword || !hasActionKeyword) {
-        console.log(`[メールID: ${messageId}] 引用文除去後の本文にキーワード(A+B)が含まれないためスキップ`);
         continue;
       }
       
@@ -115,14 +97,14 @@ function checkInformalCancel_internal() {
       const bodySnippet = bodyOnly.substring(0, 300); 
 
       const newId = logSheet.getLastRow();
-      logSheet.appendRow([newId, receivedTime, from, to, subject, bodySnippet, messageId]);
+      logSheet.appendRow([newId, receivedTime, message.getFrom(), to, subject, bodySnippet, messageId]);
       
       existingMessageIDs.push(messageId); 
 
       const chatworkMessage = `[toall]\n[info][title]特定アラート[/title]\nメールに特定のフレーズを含む内容が届きました。\n内容の確認をお願いします。\n※本アラートには関係のないメールも含まれる可能性があります。\n\n受信時刻： ${receivedTime}\n件名： ${subject}\n内容：\n${bodySnippet}...\n[/info]`;
 
       sendToChatwork(DOTAKYAN_CHATWORK_ROOM_ID, chatworkMessage);
-      Utilities.sleep(1500); // 制限回避
+      Utilities.sleep(1500);
     }
     
     if (processedThisThread) {
