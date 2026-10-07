@@ -39,9 +39,9 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   let customTitle = '';
   const mentionMap = getSlackMentionMap();
 
-  // ★夜間（21:00〜07:00）の <!channel> 制限フラグ
+  // ★修正：メンション(toall/channel)を「07:00〜19:00のみ」に制限するための時間判定
   const currentHour = new Date().getHours();
-  const isNightTime = (currentHour >= 21 || currentHour < 7);
+  const isNightTime = (currentHour >= 19 || currentHour < 7);
   const isEmergencyCancel = slackMsg.includes('直近緊急キャンセル') || slackMsg.includes('緊急キャンセル');
   const shouldSuppressChannel = isNightTime && !isEmergencyCancel; 
 
@@ -93,8 +93,6 @@ function buildSlackPayload(cwMessage, cwRoomId) {
         if (!shouldSuppressChannel) mentionText += "<!channel> ";
     }
     
-    // ★修正：無意味な `@担当者` の捏造付与を完全に削除しました
-
     const formattedSlackMsg = `\`医師からメール\`\n${mentionText.trim()}\n受信時刻：${dateStr}\n件名：${subjStr}\n\`${realDocName} 先生\`\n\n\`\`\`\n${bodyContent}\n\`\`\``;
     return { channelId: channelId, text: formattedSlackMsg };
   }
@@ -131,8 +129,6 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     if (slackMsg.toLowerCase().includes('[toall]')) {
         if (!shouldSuppressChannel) mentionText += "<!channel> ";
     }
-
-    // ★修正：無意味な `@担当者` の捏造付与を完全に削除しました
 
     let bodyContent = slackMsg;
     bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
@@ -254,7 +250,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   if (slackMsg.includes('エムスリー') || slackMsg.includes('オファー希望') || slackMsg.includes('メッセージ受信') || slackMsg.includes('（オファー経由）勤務確定')) {
     channelId = 'C0BV5NT4TLY';
     customTitle = '*【エムスリー医師のお問い合わせ】*';
-  } else if (slackMsg.includes('紹介会社キャンセル自動反映')) { // ★追加：紹介会社キャンセル通知用
+  } else if (slackMsg.includes('紹介会社キャンセル自動反映')) { 
     channelId = 'C0BV5NT4TLY';
   } else if (slackMsg.includes('ATMSメール')) {
     channelId = 'C0BU7687HDK';
@@ -287,6 +283,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   
   slackMsg = slackMsg.replace(/\[To:\d+\][^\s<]*/g, '');
   
+  // ★Chatworkの「[toall]」をSlack用の「<!channel>」に変換、または時間帯によって消去する
   if (shouldSuppressChannel) {
       slackMsg = slackMsg.replace(/\[toall\]/ig, '');
   } else {
@@ -295,6 +292,9 @@ function buildSlackPayload(cwMessage, cwRoomId) {
 
   slackMsg = slackMsg.replace(/\[info\]/g, '').replace(/\[\/info\]/g, '').replace(/\[hr\]/g, '\n---------------------------------------\n');
   slackMsg = slackMsg.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*\n');
+
+  // ★追加：Slack用に [code] をバッククオート3つに変換する処理
+  slackMsg = slackMsg.replace(/\[code\]\n?/ig, '```\n').replace(/\n?\[\/code\]/ig, '\n```');
   
   if (customTitle) {
     if (slackMsg.includes('<!channel>')) {

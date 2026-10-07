@@ -9,16 +9,14 @@ function processAgencyCancelEmails_internal() {
   const TARGET_CW_ROOM_ID = '415529974'; // 指定のChatworkルーム
   const LABEL_NAME = '処理済み-紹介会社キャンセル';
   
-  // シート取得（アーカイブシートを対象）
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  // ※環境によってシート名が違う場合は '処理済み' や 'アーカイブ' に変更してください
   const archiveSheet = ss.getSheetByName('アーカイブ') || ss.getSheetByName('処理済み');
   if (!archiveSheet) {
     console.error("アーカイブ（処理済み）シートが見つかりません。");
     return;
   }
 
-  // 2. Gmailの検索（直近2日間のメールに限定してAPI消費を抑える）
+  // 2. Gmailの検索（直近2日間のメール）
   const query = `(subject:"取消のご連絡" OR subject:"【キャンセル】") (from:medical-principle.co.jp OR from:medrt.com OR from:mnys.jp) newer_than:2d -label:${LABEL_NAME}`;
   const threads = GmailApp.search(query, 0, 20);
   
@@ -27,14 +25,12 @@ function processAgencyCancelEmails_internal() {
     return;
   }
 
-  // ラベルの準備
   let processedLabel = GmailApp.getUserLabelByName(LABEL_NAME);
   if (!processedLabel) { processedLabel = GmailApp.createLabel(LABEL_NAME); }
 
   const allMessages = GmailApp.getMessagesForThreads(threads);
-  const processedJobIds = new Set(); // 重複・増殖防止ストッパー
+  const processedJobIds = new Set(); 
 
-  // 3. シートの列設定（必要に応じて調整）
   const colAgency = 1, colDate = 2, colTime = 3, colClinic = 4, colDept = 5;
   const colId = 6, colDoctor = 7, colUrl = 8, colStatus = 9;
   const colTime1 = 10, colTime2 = 11, colPerson = 12, colSaiyo = 13;
@@ -50,7 +46,6 @@ function processAgencyCancelEmails_internal() {
       
       let agency = '', jobId = '', clinic = '', doctorName = '', workDate = '', workTime = '';
 
-      // 【民間医局】の抽出
       if (subject.includes('取消のご連絡') && subject.includes('民間医局')) {
         agency = '民間医局';
         const jobIdMatch = body.match(/案件番号[\s ]*[:：][\s ]*([A-Za-z0-9\-]+)/);
@@ -65,7 +60,6 @@ function processAgencyCancelEmails_internal() {
         if (dateMatch) workDate = dateMatch[1].match(/(\d{4}年\d{1,2}月\d{1,2}日)/) ? dateMatch[1].match(/(\d{4}年\d{1,2}月\d{1,2}日)/)[1] : dateMatch[1].trim();
         if (timeMatch) workTime = timeMatch[1].trim();
 
-      // 【MRT】の抽出
       } else if (subject.includes('【キャンセル】') && subject.includes('MRT')) {
         agency = 'MRT';
         const jobIdMatch = body.match(/ID\s*:\s*(\d+)/);
@@ -82,16 +76,12 @@ function processAgencyCancelEmails_internal() {
       }
 
       if (!jobId) continue; 
-
-      // 重複ストッパー（スレッド内の重複を排除）
       if (processedJobIds.has(jobId)) continue;
       processedJobIds.add(jobId);
 
-      // 最新のシートデータを取得（差し込みがあった場合も考慮して毎回取得）
       const sheetData = archiveSheet.getDataRange().getValues();
       let foundRowIndex = -1;
 
-      // 第1検索：識別番号(F列)で検索
       for (let r = 0; r < sheetData.length; r++) {
         if (String(sheetData[r][colId - 1]).trim() === jobId) {
           foundRowIndex = r;
@@ -99,7 +89,6 @@ function processAgencyCancelEmails_internal() {
         }
       }
 
-      // 第2検索：識別番号が無い場合、会社＋日付＋拠点＋名前 で検索
       if (foundRowIndex === -1) {
         let normalizedMailDate = workDate.replace(/年|月/g, '/').replace(/日/g, '');
         let cleanMailName = doctorName.replace(/\s+/g, '');
@@ -121,21 +110,18 @@ function processAgencyCancelEmails_internal() {
       let isInserted = false;
 
       if (foundRowIndex !== -1) {
-        // 【存在するパターン】対象行のみをピンポイント更新
         targetRowNumber = foundRowIndex + 1;
         archiveSheet.getRange(targetRowNumber, colStatus).setValue('キャンセル済み');
         archiveSheet.getRange(targetRowNumber, colSaiyo).setValue('不採用');
-        // A列からM列（13列）まで背景色を黄色に変更
         archiveSheet.getRange(targetRowNumber, 1, 1, 13).setBackground('#ffe599');
       } else {
-        // 【存在しないパターン】新規差し込み作成
         isInserted = true;
         const newRow = new Array(13).fill('');
         newRow[colAgency - 1] = agency;
         newRow[colDate - 1] = workDate;
         newRow[colTime - 1] = workTime;
         newRow[colClinic - 1] = clinic;
-        newRow[colDept - 1] = '小児科'; // 仮置き
+        newRow[colDept - 1] = '小児科'; 
         newRow[colId - 1] = jobId;
         newRow[colDoctor - 1] = doctorName;
         newRow[colStatus - 1] = 'キャンセル済み';
@@ -150,11 +136,13 @@ function processAgencyCancelEmails_internal() {
         archiveSheet.getRange(targetRowNumber, 1, 1, 13).setBackground('#ffe599');
       }
 
-      // URL生成
-      const targetRowUrl = `https://docs.google.com/spreadsheets/d/${ss.getId()}/edit#gid=${archiveSheet.getSheetId()}&range=A${targetRowNumber}`;
+      const targetRowUrl = `[https://docs.google.com/spreadsheets/d/$](https://docs.google.com/spreadsheets/d/$){ss.getId()}/edit#gid=${archiveSheet.getSheetId()}&range=A${targetRowNumber}`;
 
-      // 通知メッセージ生成
-      const chatworkMessage = `[info][title]紹介会社キャンセル自動反映[/title]
+      // ★追加：時間帯（07:00 - 19:00）によるメンション制御
+      const currentHour = new Date().getHours();
+      const mentionTag = (currentHour >= 7 && currentHour < 19) ? "[toall]\n" : "";
+
+      const chatworkMessage = `${mentionTag}[info][title]紹介会社キャンセル自動反映[/title]
 紹介会社からのキャンセル連絡を検知し、シートの該当行を「不採用」「キャンセル済み」に自動更新${isInserted ? '（※該当行なしのため新規追加）' : ''}しました。
 
 [code]
@@ -170,16 +158,14 @@ function processAgencyCancelEmails_internal() {
 ${targetRowUrl}
 [/info]`;
 
-      // 通知送信
       sendToChatwork(TARGET_CW_ROOM_ID, chatworkMessage);
       threadProcessed = true;
-      Utilities.sleep(1500); // 連続送信時のAPIエラー回避
+      Utilities.sleep(1500); 
     }
 
     if (threadProcessed) {
       thread.addLabel(processedLabel);
     }
   }
-
   console.log("=============== 紹介会社キャンセル自動反映 完了 ===============");
 }
