@@ -254,6 +254,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   if (slackMsg.includes('エムスリー') || slackMsg.includes('オファー希望') || slackMsg.includes('メッセージ受信') || slackMsg.includes('（オファー経由）勤務確定')) {
     channelId = 'C0BV5NT4TLY';
     customTitle = '*【エムスリー医師のお問い合わせ】*';
+  } else if (slackMsg.includes('紹介会社キャンセル自動反映')) { // ★追加：紹介会社キャンセル通知用
+    channelId = 'C0BV5NT4TLY';
   } else if (slackMsg.includes('ATMSメール')) {
     channelId = 'C0BU7687HDK';
   } else if (slackMsg.includes('民間医局くん') || slackMsg.includes('給与：')) {

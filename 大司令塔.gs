@@ -18,16 +18,17 @@ function executeAllGmailProcesses_v2() {
   console.log('=============== 【大司令塔 v2】プロセスを開始 ===============');
   
   try {
-    // ★ 8つの処理を配列化して一括管理（コードがスッキリし、途中停止させやすくなります）
+    // ★ 9つの処理を配列化して一括管理（コードがスッキリし、途中停止させやすくなります）
     const tasks = [
-      { name: '(1/8) メール自動処理', run: () => mainProcessEmails_internal() },
-      { name: '(2/8) 直前応募通知', run: () => executeAllProcesses_internal() },
-      { name: '(3/8) 緊急キャンセル', run: () => { if (typeof checkAndLogEmergencyCancel_internal === 'function') checkAndLogEmergencyCancel_internal(); } },
-      { name: '(4/8) 時間外着信', run: () => { if (typeof checkTimegaiCallWithLabel_internal === 'function') checkTimegaiCallWithLabel_internal(); } },
-      { name: '(5/8) 非定型キャンセル', run: () => { if (typeof checkInformalCancel_internal === 'function') checkInformalCancel_internal(); } },
-      { name: '(6/8) エムスリーメッセージ', run: () => { if (typeof processM3Messages_internal === 'function') processM3Messages_internal(); } },
-      { name: '(7/8) 個人メール検知', run: () => { if (typeof checkPersonalEmails_internal === 'function') checkPersonalEmails_internal(); } },
-      { name: '(8/8) jinjer有給申請検知', run: () => { if (typeof processJinjerPaidLeave_internal === 'function') processJinjerPaidLeave_internal(); } }
+      { name: '(1/9) メール自動処理', run: () => mainProcessEmails_internal() },
+      { name: '(2/9) 直前応募通知', run: () => executeAllProcesses_internal() },
+      { name: '(3/9) 緊急キャンセル', run: () => { if (typeof checkAndLogEmergencyCancel_internal === 'function') checkAndLogEmergencyCancel_internal(); } },
+      { name: '(4/9) 紹介会社キャンセル反映', run: () => { if (typeof processAgencyCancelEmails_internal === 'function') processAgencyCancelEmails_internal(); } }, // ★追加
+      { name: '(5/9) 時間外着信', run: () => { if (typeof checkTimegaiCallWithLabel_internal === 'function') checkTimegaiCallWithLabel_internal(); } },
+      { name: '(6/9) 非定型キャンセル', run: () => { if (typeof checkInformalCancel_internal === 'function') checkInformalCancel_internal(); } },
+      { name: '(7/9) エムスリーメッセージ', run: () => { if (typeof processM3Messages_internal === 'function') processM3Messages_internal(); } },
+      { name: '(8/9) 個人メール検知', run: () => { if (typeof checkPersonalEmails_internal === 'function') checkPersonalEmails_internal(); } },
+      { name: '(9/9) jinjer有給申請検知', run: () => { if (typeof processJinjerPaidLeave_internal === 'function') processJinjerPaidLeave_internal(); } }
     ];
 
     for (const task of tasks) {
