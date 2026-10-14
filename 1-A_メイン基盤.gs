@@ -54,6 +54,13 @@ function onEdit_processProgressSheet(e) {
     const doctorName = doctorColIndex > 0 ? String(rowData[doctorColIndex - 1]).trim() : '';
     const jobId = String(rowData[5]).trim(); // F列：識別番号
 
+    // ★【追加】紹介会社名の欠落ストッパー
+    if (!agency) {
+      ui.alert('【エラー】', '「紹介会社」が空欄になっています。\n誤って削除された可能性がありますので、会社名を入力してから再度チェックを入れてください。', ui.ButtonSet.OK);
+      sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
+      return;
+    }
+
     // エラーチェック
     if (!saiyoStatus) {
       ui.alert('【エラー】', '採用可否が選択されていません。採用または不採用を選択してください。', ui.ButtonSet.OK);
@@ -166,6 +173,9 @@ function safeDeleteRow(sheet, rowNum) {
   }
 }
 
+// =================================================================
+// ▼▼▼ 修正版: 重複キーの初期化関数 ▼▼▼
+// =================================================================
 let mailProcessExistingKeysSet = null;
 
 function initExistingKeys(sheet) {
@@ -173,14 +183,22 @@ function initExistingKeys(sheet) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
 
-  const addDataToSet = (data) => {
+  const addDataToSet = (data, isArchive) => {
     for (let i = 1; i < data.length; i++) {
       const agency = String(data[i][0]).trim();
       if (!agency) continue;
+      
       const dateObj = new Date(data[i][1]);
       const clinic = String(data[i][3]).trim();
       const jobId = String(data[i][5]).trim();
       const doctor = String(data[i][6]).split(/[\/／（(]/)[0].replace(/\s/g, '').trim();
+      const status = String(data[i][9]).trim(); // J列: 連携ステータス
+
+      // ★【追加】アーカイブシートにあるデータでも、過去にキャンセルやお断りされたものなら除外
+      // これによりキャンセル枠への別の医師からの再応募がシートに上がってくるようになります
+      if (isArchive && (status.includes('キャンセル') || status.includes('お断り'))) {
+         continue; 
+      }
 
       let dateStr = '';
       if (dateObj instanceof Date && !isNaN(dateObj.getTime()) && dateObj.getFullYear() > 1900) {
@@ -194,9 +212,9 @@ function initExistingKeys(sheet) {
     }
   };
 
-  addDataToSet(sheet.getDataRange().getValues());
+  addDataToSet(sheet.getDataRange().getValues(), false); // 進行管理シートは全件重複対象
   if (archiveSheet) {
-    addDataToSet(archiveSheet.getDataRange().getValues());
+    addDataToSet(archiveSheet.getDataRange().getValues(), true); // アーカイブはキャンセル以外を重複対象
   }
 }
 

@@ -129,6 +129,7 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
   let shiftMatch;
   let foundShift = false;
   
+  // パターンA: 共通フォーマット
   while ((shiftMatch = shiftRegex.exec(body)) !== null) {
     foundShift = true;
     const entryData = { 
@@ -143,9 +144,11 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
     try { accumulateSpecialCandidate(entryData, body); } catch(e) {}
   }
   
+  // パターンB: 民間医局などのフォーマット
   if (!foundShift) {
     const regexListOld = /シフト応募日：\s*(\d{4}年\d{1,2}月\d{1,2}日 \([月火水木金土日]\))(?:\s*(\d{1,2}:\d{2}\s*[～~〜\-]\s*\d{1,2}:\d{2}))?[^\n\r]*[\n\r]+応募拠点名：\s*([^\n\r]+)/g;
     while ((shiftMatch = regexListOld.exec(body)) !== null) {
+       foundShift = true;
        const entryData = { 
          doctorName: doctorName,
          workDate: shiftMatch[1].trim(), 
@@ -155,6 +158,36 @@ function processSingleMessage_internal(message, sheet, existingUniqueKeys, today
        const status = processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryData, todayStr, tomorrowStr, dayAfterTomorrowStr, receivedDateObj, agencyData, agencyStatusColumnIndex);
        if (status) processedFlag = true;
        try { accumulateSpecialCandidate(entryData, body); } catch(e) {}
+    }
+  }
+
+  // ★★★ パターンC（MRT対応フォーマット） ★★★
+  if (!foundShift) {
+    const mrtDateRegex = /日時\s*:\s*(\d{4}\/\d{1,2}\/\d{1,2}\s*\([月火水木金土日]\))\s*(\d{1,2}:\d{2}\s*[〜~～\-]\s*\d{1,2}:\d{2})/;
+    const mrtClinicRegex = /クリニック\s*:\s*(?:\d+\s+)?([^\n\r]+)/;
+    
+    const dateMatch = body.match(mrtDateRegex);
+    const clinicMatch = body.match(mrtClinicRegex);
+    
+    if (dateMatch && clinicMatch) {
+      foundShift = true;
+      // 日付を「YYYY年M月D日」の共通フォーマットに変換
+      const formattedDate = dateMatch[1].replace(/(\d{4})\/(\d{1,2})\/(\d{1,2})/, "$1年$2月$3日");
+      
+      // MRTのメール本文に医師名がない場合は「未記載」にする
+      if (doctorName === "不明な医師") {
+        doctorName = "未記載(システム確認)";
+      }
+      
+      const entryData = { 
+        doctorName: doctorName,
+        workDate: formattedDate, 
+        workTime: dateMatch[2].trim(),
+        clinic: clinicMatch[1].trim() 
+      };
+      const status = processEntry_internal(sheet, existingUniqueKeys, receivedDate, entryData, todayStr, tomorrowStr, dayAfterTomorrowStr, receivedDateObj, agencyData, agencyStatusColumnIndex);
+      if (status) processedFlag = true;
+      try { accumulateSpecialCandidate(entryData, body); } catch(e) {}
     }
   }
   

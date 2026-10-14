@@ -2,7 +2,7 @@
 // 【1-C_その他紹介会社処理】
 // エムステージ、MRT（応募・取消し自動処理対応）、民間医局、メディウェル
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
-// ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
+// ★修正内容：MRTの検索クエリから「-label:処理済み」を撤廃し、スレッド巻き込みによるすり抜けを防止
 // =================================================================
 
 // === エムステージ（スレッド展開・堅牢抽出対応）===
@@ -122,16 +122,26 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
   }
 }
 
-// === MRT（スレッド対応・応募取消し自動処理搭載版） ===
+// === MRT（スレッド巻き込み防止・堅牢化対応版） ===
 function processMRT_Application(querySuffix, processedLabel) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME_PROGRESS);
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
   const processedLabelName = processedLabel.getName();
   const now = new Date();
+
+  // ★【追加】処理済みメールのIDをプロパティから取得（1-Bと同じ堅牢な仕組み）
+  const props = PropertiesService.getScriptProperties();
+  let processedIds = [];
+  try {
+    const stored = props.getProperty('MRT_PROCESSED_IDS');
+    if (stored) processedIds = JSON.parse(stored);
+  } catch(e) {}
+  let isIdUpdated = false;
   
   // === 1. 応募通知の処理 ===
-  const applyQuery = `subject:("【MRT】") subject:("応募通知") -label:${processedLabelName} ${querySuffix}`;
+  // ★【修正】スレッド巻き込みによるすり抜けを防ぐため「-label」を撤廃
+  const applyQuery = `subject:("【MRT】") subject:("応募通知") ${querySuffix}`;
   const applyThreads = GmailApp.search(applyQuery);
   
   if (applyThreads.length > 0) {
@@ -143,6 +153,12 @@ function processMRT_Application(querySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+        const messageId = message.getId();
+        // ★【追加】既に処理したメールIDなら本文を取得する前にスキップ
+        if (processedIds.includes(messageId)) return;
+        processedIds.push(messageId);
+        isIdUpdated = true;
+
         const receivedDate = message.getDate();
         if ((now - receivedDate) / (1000 * 60 * 60) > 48) return; 
 
@@ -172,7 +188,8 @@ function processMRT_Application(querySuffix, processedLabel) {
   }
 
   // === 2. 応募取消し（キャンセル）の自動処理 ===
-  const mrtCancelQuery = `subject:("【MRT】") subject:("応募取消し") -label:${processedLabelName} newer_than:14d`;
+  // ★【修正】こちらもスレッド巻き込み防止のため「-label」を撤廃
+  const mrtCancelQuery = `subject:("【MRT】") subject:("応募取消し") newer_than:14d`;
   const cancelThreads = GmailApp.search(mrtCancelQuery);
   
   if (cancelThreads.length > 0) {
@@ -184,6 +201,12 @@ function processMRT_Application(querySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+        const messageId = message.getId();
+        // ★【追加】処理済みスキップ
+        if (processedIds.includes(messageId)) return;
+        processedIds.push(messageId);
+        isIdUpdated = true;
+
         const body = message.getPlainBody();
         const idMatch = body.match(/ID[\s:：]*(\d+)/i);
         const mailJobId = idMatch ? idMatch[1].trim() : "";
@@ -225,6 +248,14 @@ function processMRT_Application(querySuffix, processedLabel) {
         thread.addLabel(processedLabel);
       }
     }
+  }
+
+  // ★【追加】新しく処理したID群をプロパティに保存（最新250件のみ保持）
+  if (isIdUpdated) {
+    if (processedIds.length > 250) {
+      processedIds = processedIds.slice(-250);
+    }
+    props.setProperty('MRT_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 }
 

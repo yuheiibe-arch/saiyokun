@@ -25,7 +25,7 @@ function checkAtmsEmails_internal() {
     return;
   }
 
-  const mentions = "[To:8440783]Gibran ~RGS~さん\n[To:11351957]丸山 幹枝さん\n[To:9935353]伊瓶さん\n";
+  const mentions = "[To:8440783]Gibran ~RGS~さん\n[To:9935353]伊瓶さん\n";
   let isUpdated = false; // プロパティを更新する必要があるかのフラグ
 
   // ★ API通信1回で全メッセージを一括取得
