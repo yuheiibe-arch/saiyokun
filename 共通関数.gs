@@ -34,7 +34,7 @@ function getSlackMentionMap() {
 }
 
 function buildSlackPayload(cwMessage, cwRoomId) {
-  let slackMsg = cwMessage;
+  let slackMsg = String(cwMessage || '');
   let channelId = '';
   let customTitle = '';
   const mentionMap = getSlackMentionMap();
@@ -44,6 +44,23 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   const isNightTime = (currentHour >= 19 || currentHour < 7);
   const isEmergencyCancel = slackMsg.includes('直近緊急キャンセル') || slackMsg.includes('緊急キャンセル');
   const shouldSuppressChannel = isNightTime && !isEmergencyCancel; 
+
+  // ==============================================================
+  // ▼▼▼ 0. MRT通知 (Re:ray) 専用の処理 ▼▼▼
+  // ==============================================================
+  if (slackMsg.includes('[title]MRT通知[/title]')) {
+    channelId = 'C0BV5NT4TLY'; // メールチャネル
+    
+    let bodyContent = slackMsg
+      .split('[info]').join('')
+      .split('[/info]').join('')
+      .split('[title]MRT通知[/title]').join('')
+      .trim();
+
+    const channelTag = shouldSuppressChannel ? "" : "<!channel>\n";
+    const formattedSlackMsg = `${channelTag}\`\`\`\n${bodyContent}\n\`\`\``;
+    return { channelId: channelId, text: formattedSlackMsg };
+  }
 
   // ==============================================================
   // ▼▼▼ 1. 医師からのメール（個人） 専用の処理 ▼▼▼
@@ -132,8 +149,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
 
     let bodyContent = slackMsg;
     bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
-    bodyContent = bodyContent.replace(/\[toall\]/ig, '');
-    bodyContent = bodyContent.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
+    bodyContent = bodyContent.split('[toall]').join('').split('[TOALL]').join('');
+    bodyContent = bodyContent.split('[info]').join('').split('[/info]').join('');
     bodyContent = bodyContent.replace(/\[title\].*?\[\/title\]/ig, '');
     bodyContent = bodyContent.replace(/受信時刻：[^\n]+/g, '');
     bodyContent = bodyContent.replace(/件名：[^\n]+/g, '');
@@ -154,8 +171,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     
     let bodyContent = slackMsg;
     bodyContent = bodyContent.replace(/\[To:\d+\][^\s\n]*/g, '');
-    bodyContent = bodyContent.replace(/\[toall\]/ig, '');
-    bodyContent = bodyContent.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
+    bodyContent = bodyContent.split('[toall]').join('').split('[TOALL]').join('');
+    bodyContent = bodyContent.split('[info]').join('').split('[/info]').join('');
     bodyContent = bodyContent.replace(/\[title\].*?\[\/title\]/ig, '');
     bodyContent = bodyContent.replace(/^\s*\n/gm, ''); 
     bodyContent = bodyContent.trim();
@@ -221,18 +238,18 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     headerPart = headerPart.replace(/\[To:\d+\][^\s<]*/g, '');
     
     if (shouldSuppressChannel) {
-        headerPart = headerPart.replace(/\[toall\]/ig, '');
+        headerPart = headerPart.split('[toall]').join('').split('[TOALL]').join('');
     } else {
-        headerPart = headerPart.replace(/\[toall\]/ig, '<!channel>');
+        headerPart = headerPart.split('[toall]').join('<!channel>').split('[TOALL]').join('<!channel>');
     }
     
     let headerTokens = headerPart.replace(/[\n\r]+/g, ' ').split(' ').filter(t => t.trim() !== '');
     headerTokens = [...new Set(headerTokens)]; 
     let headerText = headerTokens.join(' ');
 
-    bodyPart = bodyPart.replace(/\[info\]/ig, '').replace(/\[\/info\]/ig, '');
-    bodyPart = bodyPart.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*');
-    bodyPart = bodyPart.replace(/\[hr\]/ig, '---------------------------------------');
+    bodyPart = bodyPart.split('[info]').join('').split('[/info]').join('');
+    bodyPart = bodyPart.split('[title]').join('*').split('[/title]').join('*');
+    bodyPart = bodyPart.split('[hr]').join('---------------------------------------');
     bodyPart = bodyPart.replace(/^\s*\n/gm, '').trim();
 
     let formattedSlackMsg = '';
@@ -245,7 +262,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   }
 
   // ==============================================================
-  // ▼▼▼ 5. その他（既存の汎用フォーマット） ▼▼▼
+  // ▼▼▼ 5. その他（エムスリー・汎用フォーマット） ▼▼▼
   // ==============================================================
   if (slackMsg.includes('エムスリー') || slackMsg.includes('オファー希望') || slackMsg.includes('メッセージ受信') || slackMsg.includes('（オファー経由）勤務確定')) {
     channelId = 'C0BV5NT4TLY';
@@ -283,18 +300,18 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   
   slackMsg = slackMsg.replace(/\[To:\d+\][^\s<]*/g, '');
   
-  // ★Chatworkの「[toall]」をSlack用の「<!channel>」に変換、または時間帯によって消去する
+  // ★バックスラッシュ消失バグを防ぐため、正規表現を使わず split & join で確実に置換
   if (shouldSuppressChannel) {
-      slackMsg = slackMsg.replace(/\[toall\]/ig, '');
+      slackMsg = slackMsg.split('[toall]').join('').split('[TOALL]').join('');
   } else {
-      slackMsg = slackMsg.replace(/\[toall\]/ig, '<!channel>');
+      slackMsg = slackMsg.split('[toall]').join('<!channel>').split('[TOALL]').join('<!channel>');
   }
 
-  slackMsg = slackMsg.replace(/\[info\]/g, '').replace(/\[\/info\]/g, '').replace(/\[hr\]/g, '\n---------------------------------------\n');
-  slackMsg = slackMsg.replace(/\[title\]([\s\S]*?)\[\/title\]/g, '*$1*\n');
-
-  // ★追加：Slack用に [code] をバッククオート3つに変換する処理
-  slackMsg = slackMsg.replace(/\[code\]\n?/ig, '```\n').replace(/\n?\[\/code\]/ig, '\n```');
+  slackMsg = slackMsg.split('[info]').join('').split('[/info]').join('');
+  slackMsg = slackMsg.split('[hr]').join('\n---------------------------------------\n');
+  slackMsg = slackMsg.split('[title]').join('*').split('[/title]').join('*\n');
+  slackMsg = slackMsg.split('[code]\n').join('```\n').split('[code]').join('```\n');
+  slackMsg = slackMsg.split('\n[/code]').join('\n```').split('[/code]').join('\n```');
   
   if (customTitle) {
     if (slackMsg.includes('<!channel>')) {

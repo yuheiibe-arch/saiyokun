@@ -6,6 +6,7 @@
 // ★追加修正：時間帯（07:00〜21:00）による [toall] の付与ロジックを追加
 // ★追加修正：API超節約設計（検索範囲を過去2時間のUNIX時間に変更）
 // ★追加修正：自社署名の「株式会社」による自爆誤検知を防ぐため、引用カット後に判定
+// ★追加修正：【Re:ray】のメールを拒否ドメインの例外として通過させ専用フォーマットで通知
 // =================================================================
 
 // 外部メンションリストの設定
@@ -123,61 +124,74 @@ function checkPersonalEmails_internal() {
         newRows.push([receivedDateStr, from, message.getTo(), subject, bodyPreview, messageId]);
         existingIds.push(messageId);
 
-        // 送信元(From)から名前部分だけを抽出し、クォーテーションのゴミを完全に除去
-        let doctorName = from;
-        const nameMatch = from.match(/^["']?(.*?)["']?(?:\s+via\s+.*?)?\s*<.+>$/i);
-        if (nameMatch && nameMatch[1]) doctorName = nameMatch[1];
-        doctorName = doctorName.replace(/["']/g, '').replace(/先生$/, '').trim();
+        let chatworkMessage = '';
 
-        // ★★★ Vodafone対策：本文末尾（署名）から本当の名前を推測して上書き ★★★
-        let realName = doctorName;
-        const lines = cleanBody.split('\n').map(l => l.trim()).filter(l => l.length > 0);
-        if (lines.length > 0) {
-          const lastLine = lines[lines.length - 1];
-          // 英数字や記号を含まない、2〜15文字の日本語らしき文字列なら名前に採用
-          if (/^[^!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/0-9A-Za-z]{2,15}$/.test(lastLine)) {
-            realName = lastLine;
+        // ★★★【追加】Re:ray（MRT通知）専用のフォーマット処理 ★★★
+        if (subject.toLowerCase().includes('【re:ray】')) {
+          let rerayBody = cleanBody
+            .replace(/^.*?医療法人社団ナイズ\s*様\s*/m, '') // 冒頭の宛名をカット
+            .replace(/※本メールはシステムより[\s\S]*$/, '') // 末尾の注釈をカット
+            .trim();
+            
+          chatworkMessage = `[info][title]MRT通知[/title]\n${rerayBody}\n[/info]`;
+        } else {
+          // --- 通常の個人メール処理 ---
+          // 送信元(From)から名前部分だけを抽出し、クォーテーションのゴミを完全に除去
+          let doctorName = from;
+          const nameMatch = from.match(/^["']?(.*?)["']?(?:\s+via\s+.*?)?\s*<.+>$/i);
+          if (nameMatch && nameMatch[1]) doctorName = nameMatch[1];
+          doctorName = doctorName.replace(/["']/g, '').replace(/先生$/, '').trim();
+
+          // ★★★ Vodafone対策：本文末尾（署名）から本当の名前を推測して上書き ★★★
+          let realName = doctorName;
+          const lines = cleanBody.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+          if (lines.length > 0) {
+            const lastLine = lines[lines.length - 1];
+            // 英数字や記号を含まない、2〜15文字の日本語らしき文字列なら名前に採用
+            if (/^[^!@#$%^&*()_+={}\[\]|\\:;"'<>,.?/0-9A-Za-z]{2,15}$/.test(lastLine)) {
+              realName = lastLine;
+            }
           }
-        }
 
-        // --- 担当者メンションの判定 ---
-        let targetTags = [];
-        const scanHeader = cleanNormBody.substring(0, 100); // 宛名検索用（冒頭100文字）
+          // --- 担当者メンションの判定 ---
+          let targetTags = [];
+          const scanHeader = cleanNormBody.substring(0, 100); // 宛名検索用（冒頭100文字）
 
-        for (const m of mentionList) {
-          const name = m.normName; // 標準化された名前で検索
-          
-          // パターン1（冒頭での宛名）フルネーム「岸 大貴様」や「岸大貴 様」などにも対応
-          const atenaRegex = new RegExp(name + "[\\s ]*(?:[^\\s 様さん宛先生]{1,5}[\\s ]*)?(様|さん|宛|先生)", "i");
-          
-          // パターン2：スレッドの下の方（引用部全体）にある自分たちの署名や名乗り
-          const signRegex = new RegExp(`(?:事務局|サポート部)[\\s\\n ]*` + name + `(?:[\\s\\n ]|$)`, "i");
-          const nanoriRegex = new RegExp(`、` + name + `(?:です|でございます)`, "i");
-          const simpleSignRegex = new RegExp(`^[\\s ]*` + name + `[\\s ]*$`, "m");
+          for (const m of mentionList) {
+            const name = m.normName; // 標準化された名前で検索
+            
+            // パターン1（冒頭での宛名）フルネーム「岸 大貴様」や「岸大貴 様」などにも対応
+            const atenaRegex = new RegExp(name + "[\\s ]*(?:[^\\s 様さん宛先生]{1,5}[\\s ]*)?(様|さん|宛|先生)", "i");
+            
+            // パターン2：スレッドの下の方（引用部全体）にある自分たちの署名や名乗り
+            const signRegex = new RegExp(`(?:事務局|サポート部)[\\s\\n ]*` + name + `(?:[\\s\\n ]|$)`, "i");
+            const nanoriRegex = new RegExp(`、` + name + `(?:です|でございます)`, "i");
+            const simpleSignRegex = new RegExp(`^[\\s ]*` + name + `[\\s ]*$`, "m");
 
-          if (atenaRegex.test(scanHeader) || signRegex.test(normBody) || nanoriRegex.test(normBody) || simpleSignRegex.test(normBody)) {
-            targetTags.push(m.tag);
+            if (atenaRegex.test(scanHeader) || signRegex.test(normBody) || nanoriRegex.test(normBody) || simpleSignRegex.test(normBody)) {
+              targetTags.push(m.tag);
+            }
           }
-        }
-        
-        // メンションタグの組み立て（重複を削除して結合）
-        targetTags = [...new Set(targetTags)];
-        
-        // ★★★ 時間帯判定ロジックの追加 ★★★
-        const currentHour = now.getHours();
-        const isDayTime = (currentHour >= 7 && currentHour < 21); // 07:00 〜 20:59
-        
-        let mentionText = '';
-        if (targetTags.length > 0) {
-            mentionText = targetTags.join(' ') + '\n';
-        } else if (isDayTime) {
-            mentionText = '[toall]\n';
-        }
+          
+          // メンションタグの組み立て（重複を削除して結合）
+          targetTags = [...new Set(targetTags)];
+          
+          // ★★★ 時間帯判定ロジックの追加 ★★★
+          const currentHour = now.getHours();
+          const isDayTime = (currentHour >= 7 && currentHour < 21); // 07:00 〜 20:59
+          
+          let mentionText = '';
+          if (targetTags.length > 0) {
+              mentionText = targetTags.join(' ') + '\n';
+          } else if (isDayTime) {
+              mentionText = '[toall]\n';
+          }
 
-        // Chatworkメッセージを作成（元のメアド名と本当の名前が、スペースの有無に関わらず一致するかチェック）
-        const isSameName = (doctorName.replace(/\s/g, '') === realName.replace(/\s/g, ''));
+          // Chatworkメッセージを作成（元のメアド名と本当の名前が、スペースの有無に関わらず一致するかチェック）
+          const isSameName = (doctorName.replace(/\s/g, '') === realName.replace(/\s/g, ''));
 
-        const chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]\n医師からメールが届きました。担当者は確認してください。\n受信時刻：${receivedDateStr}\n件名：${subject}\n[info][title]${realName} 先生[/title]\n${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}\n[/info]\n[/info]`;
+          chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]\n医師からメールが届きました。担当者は確認してください。\n受信時刻：${receivedDateStr}\n件名：${subject}\n[info][title]${realName} 先生[/title]\n${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}\n[/info]\n[/info]`;
+        }
 
         // 共通の送信関数でChatworkへ通知
         const isSuccess = sendToChatwork(PERSONAL_MAIL_CHATWORK_ROOM_ID, chatworkMessage);
@@ -213,31 +227,36 @@ function classifyEmailForProduction(from, subject, body) {
   const subjectLower = subject.toLowerCase();
   const bodyLower = (body || '').toLowerCase();
 
+  // ★【追加】特例除外要件：【Re:ray】のメールはドメインやnoreplyの拒否設定を無視して通過させる
+  if (subjectLower.includes('【re:ray】')) {
+    return '個人候補';
+  }
+
   // 1. システム通知（★info@を無条件でブロック）
   if (fromLower.includes('no-reply') || 
       fromLower.includes('noreply') || 
       fromLower.includes('hospital@medrt.com') || 
-      fromLower.includes('info@') ||             
+      fromLower.includes('info@') ||              
       fromLower.includes('info-portal') || 
       fromLower.includes('enzine') || 
       fromLower.includes('entry@') || 
       fromLower.includes('sagpj') ||
-      fromLower.includes('mfl-info@') ||         
+      fromLower.includes('mfl-info@') ||          
       fromLower.includes('google.com') ||
       fromLower.includes('carenet.co.jp') ||  
       fromLower.includes('dneo.medical-res.co.jp') ||  
-      fromLower.includes('nicho.co.jp') ||     
-      fromLower.includes('alerts@') ||           
+      fromLower.includes('nicho.co.jp') ||      
+      fromLower.includes('alerts@') ||            
       fromLower.includes('mailer-daemon') || 
-      fromLower.includes('infomart.co.jp') ||     
+      fromLower.includes('infomart.co.jp') ||      
       fromLower.includes('minderu.com') ||    
       fromLower.includes('wolterskluwer.com') || // ★ ここに wolterskluwer.com を追加しました
-      subjectLower.includes('セキュリティ') ||     
-      subjectLower.includes('アラート') ||         
+      subjectLower.includes('セキュリティ') ||      
+      subjectLower.includes('アラート') ||          
       subjectLower.includes('ログイン') ||
-      subjectLower.includes('message from') ||     
-      subjectLower.includes('scanned from') ||     
-       subjectLower.includes('ingage.jp') ||     
+      subjectLower.includes('message from') ||      
+      subjectLower.includes('scanned from') ||      
+      subjectLower.includes('ingage.jp') ||      
       subjectLower.includes('【要対応】') ||
       subjectLower.includes('【要確認】') ||
       subjectLower.includes('お問い合わせスタッフ送信') ||
@@ -257,10 +276,10 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('mstage-corp.jp') || 
       fromLower.includes('medrt.com') ||
       fromLower.includes('sogo-medical.co.jp') || 
-      fromLower.includes('mynavi.jp') ||             
-      fromLower.includes('mediwel.net') ||             
+      fromLower.includes('mynavi.jp') ||              
+      fromLower.includes('mediwel.net') ||              
       fromLower.includes('prima-support-service.com') ||
-     fromLower.includes('mnys.jp') ||
+      fromLower.includes('mnys.jp') ||
       fromLower.includes('jitsugenya.biz') ||
       fromLower.includes('asiantms.com') || 
       fromLower.includes('nexway.co.jp') 
