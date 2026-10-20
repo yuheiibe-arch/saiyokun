@@ -84,13 +84,15 @@ function executeActualPost(postData) {
   if (!urlSheet) throw new Error(`シート「${URL_SHEET_NAME}」が見つかりません。`);
 
   // 本文(C2)と担当者名(C3)を取得
-  let messageBody = urlSheet.getRange('C2').getValue();
-  const picName = urlSheet.getRange('C3').getValue(); 
+  let messageBody = String(urlSheet.getRange('C2').getValue() || '');
+  const picName = String(urlSheet.getRange('C3').getValue() || '').trim(); 
 
   if (!messageBody) throw new Error("送信するメッセージがC2セルにありません。（先にフォーム回答を処理してください）");
 
-  // ★採用・不採用・DS承認報告の3パターンに対応して担当者を挿入
-  if (picName) {
+  // ★修正：本文内にまだ担当者表記がない場合のみ挿入し、二重表記を防止（「担当者：」があれば「担当：」に正規化）
+  if (messageBody.includes('担当者：')) {
+    messageBody = messageBody.replace(/担当者：/g, '担当：');
+  } else if (picName && !messageBody.includes('担当：')) {
     messageBody = messageBody.replace('〈不採用報告〉', '〈不採用報告〉\n担当：' + picName);
     messageBody = messageBody.replace('〈採用報告〉', '〈採用報告〉\n担当：' + picName);
     messageBody = messageBody.replace('〈DS承認報告〉', '〈DS承認報告〉\n担当：' + picName);

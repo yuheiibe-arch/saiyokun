@@ -174,7 +174,7 @@ function safeDeleteRow(sheet, rowNum) {
 }
 
 // =================================================================
-// ▼▼▼ 修正版: 重複キーの初期化関数 ▼▼▼
+// 修正版: 重複キーの初期化関数 
 // =================================================================
 let mailProcessExistingKeysSet = null;
 
@@ -243,15 +243,20 @@ function appendRowAndFormat(sheet, rowData) {
   sheet.getRange(newRowIndex, 2).setHorizontalAlignment('left');
   sheet.getRange(newRowIndex, CHECKBOX_COLUMN).insertCheckboxes();
   
+  // 「採用可否」列を動的に探してプルダウンを設定
   const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
   if (saiyoColIndex > 0) {
     const rule = SpreadsheetApp.newDataValidation().requireValueInList(['採用', '不採用'], true).build();
     sheet.getRange(newRowIndex, saiyoColIndex).setDataValidation(rule);
   }
   
-  const sourceValidation = sheet.getRange("M2").getDataValidation();
-  if (sourceValidation) {
-    sheet.getRange(newRowIndex, 13).setDataValidation(sourceValidation);
+  // ★修正：「対応者」列を動的に探し、2行目のセルからデータの入力規則（プルダウン）をコピーする
+  const taioushaColIndex = getColIndex_internal(sheet, '対応者');
+  if (taioushaColIndex > 0) {
+    const sourceValidation = sheet.getRange(2, taioushaColIndex).getDataValidation();
+    if (sourceValidation) {
+      sheet.getRange(newRowIndex, taioushaColIndex).setDataValidation(sourceValidation);
+    }
   }
 }
 
@@ -429,6 +434,7 @@ function processJinjerPaidLeave_internal() {
   }
 
   let isUpdated = false;
+  let hasNewRowAdded = false;
 
   for (const thread of threads) {
     const messages = thread.getMessages();
@@ -439,15 +445,19 @@ function processJinjerPaidLeave_internal() {
       if (processedIds.includes(messageId)) continue;
 
       const body = message.getPlainBody();
-      const receivedDateStr = Utilities.formatDate(message.getDate(), 'JST', 'yyyy/MM/dd HH:mm');
+      const receivedDate = message.getDate();
+      const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd HH:mm');
 
       const targetDateMatch = body.match(/申請対象日：\s*([^\n\r]+)/);
-      const targetDate = targetDateMatch ? targetDateMatch[1].trim() : '';
+      const targetDateRaw = targetDateMatch ? targetDateMatch[1].trim() : '';
 
       const applicantMatch = body.match(/申請者：\s*([^\n\r]+)/);
       const applicant = applicantMatch ? applicantMatch[1].trim() : '';
 
-      if (targetDate && applicant) {
+      if (targetDateRaw && applicant) {
+        // ★修正：ソートした際に綺麗な日付順（古い順）になるよう、対象日を yyyy/MM/dd 形式に正規化
+        const normalizedTargetDate = formatDate(targetDateRaw, receivedDate) || targetDateRaw;
+
         const newRowIdx = Math.max(sheet.getLastRow() + 1, 3);
         const maxCol = sheet.getLastColumn();
 
@@ -458,15 +468,26 @@ function processJinjerPaidLeave_internal() {
         templateRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
 
         sheet.getRange(newRowIdx, colDate).setValue(receivedDateStr);
-        sheet.getRange(newRowIdx, colTarget).setValue(targetDate);
+        sheet.getRange(newRowIdx, colTarget).setValue(normalizedTargetDate);
         sheet.getRange(newRowIdx, colName).setValue(applicant);
         sheet.getRange(newRowIdx, colStatus).setValue('未着手');
 
-        console.log(`[有給申請追加] ${applicant} : ${targetDate}`);
+        hasNewRowAdded = true;
+        console.log(`[有給申請追加] ${applicant} : ${normalizedTargetDate}`);
       }
 
       processedIds.push(messageId);
       isUpdated = true;
+    }
+  }
+
+  // ★追加：新規行が追加された場合、3行目以降（データ領域）を「対象日」の古い順（昇順）に自動ソート
+  if (hasNewRowAdded) {
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 3) {
+      const sortRange = sheet.getRange(3, 1, lastRow - 2, sheet.getLastColumn());
+      sortRange.sort({ column: colTarget, ascending: true });
+      console.log('「有給申請」シートを対象日の昇順（古い順）に並べ替えました。');
     }
   }
 

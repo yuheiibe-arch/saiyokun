@@ -136,7 +136,8 @@ function processAgencyCancelEmails_internal() {
         archiveSheet.getRange(targetRowNumber, 1, 1, 13).setBackground('#ffe599');
       }
 
-      const targetRowUrl = `[https://docs.google.com/spreadsheets/d/$](https://docs.google.com/spreadsheets/d/$){ss.getId()}/edit#gid=${archiveSheet.getSheetId()}&range=A${targetRowNumber}`;
+      // ★修正済み：正しいスプレッドシートのリンクを生成
+      const targetRowUrl = 'https://docs.google.com/spreadsheets/d/' + ss.getId() + '/edit#gid=' + archiveSheet.getSheetId() + '&range=A' + targetRowNumber;
 
       // ★追加：時間帯（07:00 - 19:00）によるメンション制御
       const currentHour = new Date().getHours();

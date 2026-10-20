@@ -1,12 +1,12 @@
 // =================================================================
-// ▼▼▼ 本番用：個人メール検知・通知スクリプト ▼▼▼
-// ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
-// ★修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
-// ★追加修正：送信元名がおかしい場合、本文末尾の署名から名前を抽出して上書き
-// ★追加修正：時間帯（07:00〜21:00）による [toall] の付与ロジックを追加
-// ★追加修正：API超節約設計（検索範囲を過去2時間のUNIX時間に変更）
-// ★追加修正：自社署名の「株式会社」による自爆誤検知を防ぐため、引用カット後に判定
-// ★追加修正：【Re:ray】のメールを拒否ドメインの例外として通過させ専用フォーマットで通知
+// 本番用：個人メール検知・通知スクリプト 
+// 修正内容：API制限対策として getMessagesForThreads による一括取得に変更
+// 修正内容：検索クエリに「-label:処理済み」を追加し無駄な通信を削減
+// 追加修正：送信元名がおかしい場合、本文末尾の署名から名前を抽出して上書き
+// 追加修正：時間帯（07:00〜21:00）による [toall] の付与ロジックを追加
+// 追加修正：自社署名の「株式会社」による自爆誤検知を防ぐため、引用カット後に判定
+// 追加修正：【Re:ray】のメールを拒否ドメインの例外として通過させ専用フォーマットで通知
+// ★今回追加：【MRT】[Q&A]応募者より質問が届きました を通過させ専用フォーマットで通知（スレッド対応）
 // =================================================================
 
 // 外部メンションリストの設定
@@ -36,10 +36,11 @@ function checkPersonalEmails_internal() {
   let label = GmailApp.getUserLabelByName(PROCESSED_LABEL_PERSONAL);
   if (!label) { label = GmailApp.createLabel(PROCESSED_LABEL_PERSONAL); }
 
-  // ★★★【重要修正】バグの元凶である after:UNIX時間 を撤廃し、newer_than:1d に変更 ★★★
-  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) -label:${label.getName()} newer_than:1d`;
+  // ★重要：同日中に同じスレッドに2通目の質問が来た際にも確実にヒットさせるため、
+  // ラベル未付与スレッドに加え、直近1日の「[Q&A]応募者より質問が届きました」スレッドも検索対象に含める
+  const searchQuery = `(to:doctor-support@caps365.jp OR to:dr.saiyo@mnys.jp) (-label:${label.getName()} OR subject:"[Q&A]応募者より質問が届きました") newer_than:1d`;
   
-  // ★ API通信上限を絶対に回避するためのストッパー: 最新の30スレッドだけをチェック
+  // API通信上限を絶対に回避するためのストッパー: 最新の30スレッドだけをチェック
   const threads = GmailApp.search(searchQuery, 0, 30);
 
   if (threads.length === 0) {
@@ -72,7 +73,7 @@ function checkPersonalEmails_internal() {
   const newRows = [];
   const now = new Date(); // 現在時刻を取得（古いメール判定用）
 
-  // ★ API通信1回で全メッセージを一括取得
+  // API通信1回で全メッセージを一括取得
   const allMessages = GmailApp.getMessagesForThreads(threads);
 
   for (let i = 0; i < threads.length; i++) {
@@ -82,7 +83,7 @@ function checkPersonalEmails_internal() {
 
     for (const message of messages) {
       const messageId = message.getId();
-      // すでに通知済みのMessage-IDはスキップ
+      // すでに通知済みのMessage-IDはスキップ（スレッド内の過去分はここで弾かれる）
       if (existingIds.includes(messageId)) continue;
 
       const receivedDate = message.getDate();
@@ -98,11 +99,11 @@ function checkPersonalEmails_internal() {
       const subject = message.getSubject();
       const rawBody = message.getPlainBody(); 
       
-      // ★ 引用部分を先にカットする（自社の署名にある「株式会社」等の誤検知を防ぐため）
+      // 引用部分を先にカットする（自社の署名にある「株式会社」等の誤検知を防ぐため）
       const regexQuoteMarkers = /\n(>|On .*> wrote:|.* <.*@.*> wrote:|\d{4}[年\/]\d{1,2}[月\/]\d{1,2}日?.*(?::|のメール:)|From: .*|Sent: .*|-{3,}|={3,}|#{3,}|_+\s*$|(?:iPhone|iPad|スマートフォン)から送信)/i;
       let cleanBodyBeforeCheck = rawBody.split(regexQuoteMarkers)[0].trim();
       
-      // ★ 生の本文(rawBody)ではなく、引用をカットした(cleanBodyBeforeCheck)で判定する
+      // 生の本文(rawBody)ではなく、引用をカットした(cleanBodyBeforeCheck)で判定する
       if (classifyEmailForProduction(from, subject, cleanBodyBeforeCheck) === '個人候補') {
         const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd HH:mm');
         let body = rawBody; 
@@ -126,7 +127,7 @@ function checkPersonalEmails_internal() {
 
         let chatworkMessage = '';
 
-        // ★★★【追加】Re:ray（MRT通知）専用のフォーマット処理 ★★★
+        // ▼ 1. Re:ray（MRT通知）専用のフォーマット処理 
         if (subject.toLowerCase().includes('【re:ray】')) {
           let rerayBody = cleanBody
             .replace(/^.*?医療法人社団ナイズ\s*様\s*/m, '') // 冒頭の宛名をカット
@@ -134,15 +135,66 @@ function checkPersonalEmails_internal() {
             .trim();
             
           chatworkMessage = `[info][title]MRT通知[/title]\n${rerayBody}\n[/info]`;
+
+        // ▼ 2. ★今回追加：【MRT】[Q&A]応募者より質問が届きました 専用のフォーマット処理
+        } else if (subject.includes('[Q&A]応募者より質問が届きました')) {
+          // 件名例: 【MRT】[Q&A]応募者より質問が届きました[5062163:2026/10/20(火) 15:00〜]
+          let jobId = '不明';
+          let workDate = '不明';
+          let workTime = '不明';
+          let clinic = '不明';
+          let url = '';
+
+          // 件名の [案件番号:勤務日 勤務時間] を解析
+          const subjBracketMatch = subject.match(/\[(\d+)\s*[:：]\s*(\d{4}\/\d{1,2}\/\d{1,2}(?:\([月火水木金土日]\))?)\s*([^\]]+)\]/);
+          if (subjBracketMatch) {
+            jobId = subjBracketMatch[1].trim();
+            workDate = subjBracketMatch[2].trim();
+            workTime = subjBracketMatch[3].trim();
+          } else {
+            // 万が一件名の形式が少し違った場合は本文の [5062163] から取得
+            const idInBody = cleanBody.match(/\[(\d{5,})\]/);
+            if (idInBody) jobId = idInBody[1].trim();
+          }
+
+          // 本文の [キャップスクリニック北葛西] から拠点名を抽出
+          const clinicMatch = cleanBody.match(/\[(?:医療法人社団[^\]]*?)?キャップスクリニック([^\]]+?)\]/);
+          if (clinicMatch) {
+            clinic = clinicMatch[1].trim();
+          } else {
+            const clinicFallback = cleanBody.match(/キャップスクリニック([^\s \]\n\r]+)/);
+            if (clinicFallback) clinic = clinicFallback[1].replace(/様$/, '').trim();
+          }
+
+          // 本文からURLを抽出
+          const urlMatch = cleanBody.match(/URL[\s:：]*(https?:\/\/[^\s\n\r]+)/i) || cleanBody.match(/(https?:\/\/medical\.medrt\.com\/[^\s\n\r]+)/i);
+          if (urlMatch) {
+            url = urlMatch[1].trim();
+          }
+
+          const currentHour = now.getHours();
+          const mentionTag = (currentHour >= 7 && currentHour < 21) ? '[toall]\n' : '';
+
+          const formattedQaBody = [
+            `勤務日：${workDate}`,
+            `勤務時間：${workTime}`,
+            `拠点名：${clinic}`,
+            `案件番号：${jobId}`,
+            `内容：応募者より質問がきました。`,
+            `URL：${url}`
+          ].join('\n');
+
+          chatworkMessage = `${mentionTag}[info][title]MRT質問通知[/title]\n${formattedQaBody}\n[/info]`;
+
+        // ▼ 3. 通常の個人メール処理
         } else {
-          // --- 通常の個人メール処理 ---
           // 送信元(From)から名前部分だけを抽出し、クォーテーションのゴミを完全に除去
           let doctorName = from;
           const nameMatch = from.match(/^["']?(.*?)["']?(?:\s+via\s+.*?)?\s*<.+>$/i);
           if (nameMatch && nameMatch[1]) doctorName = nameMatch[1];
           doctorName = doctorName.replace(/["']/g, '').replace(/先生$/, '').trim();
 
-          // ★★★ Vodafone対策：本文末尾（署名）から本当の名前を推測して上書き ★★★
+          // Vodafone対策：本文末尾（署名）から本当の名前を推測して上書き
           let realName = doctorName;
           const lines = cleanBody.split('\n').map(l => l.trim()).filter(l => l.length > 0);
           if (lines.length > 0) {
@@ -176,7 +228,7 @@ function checkPersonalEmails_internal() {
           // メンションタグの組み立て（重複を削除して結合）
           targetTags = [...new Set(targetTags)];
           
-          // ★★★ 時間帯判定ロジックの追加 ★★★
+          // 時間帯判定ロジックの追加 
           const currentHour = now.getHours();
           const isDayTime = (currentHour >= 7 && currentHour < 21); // 07:00 〜 20:59
           
@@ -193,7 +245,7 @@ function checkPersonalEmails_internal() {
           chatworkMessage = `${mentionText}[info][title]医師からのメール[/title]\n医師からメールが届きました。担当者は確認してください。\n受信時刻：${receivedDateStr}\n件名：${subject}\n[info][title]${realName} 先生[/title]\n${!isSameName ? doctorName + ' 先生\n' : ''}${cleanBody}\n[/info]\n[/info]`;
         }
 
-        // 共通の送信関数でChatworkへ通知
+        // 共通の送信関数でChatwork（＆Slack）へ通知
         const isSuccess = sendToChatwork(PERSONAL_MAIL_CHATWORK_ROOM_ID, chatworkMessage);
         if (!isSuccess) {
             console.error(`Chatworkへの送信に失敗しました。RoomID: ${PERSONAL_MAIL_CHATWORK_ROOM_ID}`);
@@ -227,12 +279,17 @@ function classifyEmailForProduction(from, subject, body) {
   const subjectLower = subject.toLowerCase();
   const bodyLower = (body || '').toLowerCase();
 
-  // ★【追加】特例除外要件：【Re:ray】のメールはドメインやnoreplyの拒否設定を無視して通過させる
+  // 【特例除外要件1】：【Re:ray】のメールはドメインやnoreplyの拒否設定を無視して通過させる
   if (subjectLower.includes('【re:ray】')) {
     return '個人候補';
   }
 
-  // 1. システム通知（★info@を無条件でブロック）
+  // ★【特例除外要件2（今回追加）】：【MRT】[Q&A]応募者より質問が届きました も拒否設定を無視して通過させる
+  if (subject.includes('[Q&A]応募者より質問が届きました')) {
+    return '個人候補';
+  }
+
+  // 1. システム通知（info@を無条件でブロック）
   if (fromLower.includes('no-reply') || 
       fromLower.includes('noreply') || 
       fromLower.includes('hospital@medrt.com') || 
@@ -250,7 +307,7 @@ function classifyEmailForProduction(from, subject, body) {
       fromLower.includes('mailer-daemon') || 
       fromLower.includes('infomart.co.jp') ||      
       fromLower.includes('minderu.com') ||    
-      fromLower.includes('wolterskluwer.com') || // ★ ここに wolterskluwer.com を追加しました
+      fromLower.includes('wolterskluwer.com') ||
       subjectLower.includes('セキュリティ') ||      
       subjectLower.includes('アラート') ||          
       subjectLower.includes('ログイン') ||
@@ -261,7 +318,6 @@ function classifyEmailForProduction(from, subject, body) {
       subjectLower.includes('【要確認】') ||
       subjectLower.includes('お問い合わせスタッフ送信') ||
       subjectLower.includes('capsシフト') ||
-      // ★★★【重要修正】ここに残っていた「通勤経路」「交通費申請」を消し去り、自爆誤検知を解消 ★★★
       subjectLower.includes('【jinjer勤怠】') ||
       subjectLower.includes('【ジンジャー】') ||
       subjectLower.includes('招待:') || 
@@ -297,7 +353,7 @@ function classifyEmailForProduction(from, subject, body) {
       bodyLower.includes('株式会社') ||  
       bodyLower.includes('(株)') ||      
       bodyLower.includes('（株）') ||  
-      bodyLower.includes('㈱')            
+      bodyLower.includes('㈱')           
   ) {
     return '紹介会社・営業（キーワード検知）';
   }

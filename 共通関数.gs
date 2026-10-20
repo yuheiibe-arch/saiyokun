@@ -46,19 +46,25 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   const shouldSuppressChannel = isNightTime && !isEmergencyCancel; 
 
   // ==============================================================
-  // ▼▼▼ 0. MRT通知 (Re:ray) 専用の処理 ▼▼▼
+  // ▼▼▼ 0. MRT通知 (Re:ray) ＆ MRT質問通知 (Q&A) 専用の処理 ▼▼▼
   // ==============================================================
-  if (slackMsg.includes('[title]MRT通知[/title]')) {
+  if (slackMsg.includes('[title]MRT通知[/title]') || slackMsg.includes('[title]MRT質問通知[/title]')) {
     channelId = 'C0BV5NT4TLY'; // メールチャネル
     
+    const isQa = slackMsg.includes('[title]MRT質問通知[/title]');
+    const titleHeader = isQa ? "*【MRT質問通知】*\n" : "";
+
     let bodyContent = slackMsg
+      .split('[toall]').join('')
+      .split('[TOALL]').join('')
       .split('[info]').join('')
       .split('[/info]').join('')
       .split('[title]MRT通知[/title]').join('')
+      .split('[title]MRT質問通知[/title]').join('')
       .trim();
 
     const channelTag = shouldSuppressChannel ? "" : "<!channel>\n";
-    const formattedSlackMsg = `${channelTag}\`\`\`\n${bodyContent}\n\`\`\``;
+    const formattedSlackMsg = `${titleHeader}${channelTag}\`\`\`\n${bodyContent}\n\`\`\``;
     return { channelId: channelId, text: formattedSlackMsg };
   }
 
@@ -198,7 +204,8 @@ function buildSlackPayload(cwMessage, cwRoomId) {
     let headerPart = parts[0] || '';
     let bodyPart = parts[1] || '';
 
-    let tantoMatch = bodyPart.match(/担当：([^\n]+)/);
+    // 「担当：」「担当者：」の両方に対応して抽出し、本文からは削除
+    let tantoMatch = bodyPart.match(/担当(?:者)?：([^\n]+)/);
     let tanto = tantoMatch ? tantoMatch[1].trim() : '';
     if (tanto) {
         bodyPart = bodyPart.replace(tantoMatch[0], ''); 
@@ -274,7 +281,7 @@ function buildSlackPayload(cwMessage, cwRoomId) {
   } else if (slackMsg.includes('民間医局くん') || slackMsg.includes('給与：')) {
     channelId = 'C09TRHGU64D';
     customTitle = '*【民間医局 直接応募通知】*';
-  } else if (slackMsg.includes('直近緊急キャンセル') || slackMsg.includes('時間外不在着信') || slackMsg.includes('時間外着信') || slackMsg.includes('非定型キャンセル')) {
+  } else if (slackMsg.includes('直近緊急キャンセル') || slackMsg.includes('緊急キャンセル') || slackMsg.includes('時間外不在着信') || slackMsg.includes('時間外着信') || slackMsg.includes('非定型キャンセル')) {
     channelId = 'C09TRHGU64D';
   } else {
     channelId = 'C09TRHGU64D';

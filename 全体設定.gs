@@ -1,5 +1,5 @@
 // =================================================================
-// ▼▼▼ 【全体設定】すべての設定をここにまとめる ▼▼▼
+// 【全体設定】すべての設定をここにまとめる 
 // =================================================================
 
 // --- 1. シート名（メール自動処理 ＆ 直前応募 共通）---
@@ -9,7 +9,7 @@ const LOG_SHEET_NAME = '通知履歴';
 const URGENT_SHEET_NAME = '直前通知';
 const CANCEL_LOG_SHEET_NAME = 'キャンセルログ';
 
-// ★★★【重要】「紹介会社進捗」シートは名前を統一します
+// 【重要】「紹介会社進捗」シートは名前を統一します
 const AGENCY_SOURCE_SHEET_NAME = SHEET_NAME_PROGRESS;
 
 // --- 2. シート名（フォーム・URL処理用）---
@@ -40,13 +40,13 @@ const CHECKBOX_COLUMN = 12; // ★K列(11)からL列(12)に変更
 
 // (直前応募：part1用)
 const PROCESSED_LABEL_APPLY = '処理済み-医師シフト応募';
-// ★★★【修正】カッコで括り、両方のOR条件に newer_than:1d が効くように修正
+// 【修正】カッコで括り、両方のOR条件に newer_than:1d が効くように修正
 const GMAIL_QUERY_APPLY = `(subject:"医師シフト応募通知" OR "募集シフトへの応募がありました") newer_than:1d`;
 
 // (キャンセル・時間外用)
 const PROCESSED_LABEL_TIMEGAI = '処理済み-時間外着信';
 const PROCESSED_LABEL_CANCEL = '処理済み-キャンセル'; 
-// ★★★【修正】致命的エラーを回避するため、多重カッコと -label: 除外を完全に撤廃
+// 【修正】致命的エラーを回避するため、多重カッコと -label: 除外を完全に撤廃
 const GMAIL_QUERY_CANCEL = `(subject:"勤務2週間以内のキャンセル申請" OR subject:"勤務3日以内のキャンセル申請")`; 
 const GMAIL_QUERY_TIMEGAI = `(subject:"時間外応答がありました" OR subject:"不在着信がありました")`; 
 const GMAIL_SENDER_EXCLUDE = 'no-reply-staging';
