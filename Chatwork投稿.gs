@@ -105,4 +105,22 @@ function executeActualPost(postData) {
   if (!success) {
     throw new Error("Chatworkへの送信に失敗しました。APIキーを確認してください。");
   }
+
+  // ▼▼▼【追加】〈採用報告〉の場合、新スクリプト（拠点連絡システム）へ連動合図を送る ▼▼▼
+  if (String(messageBody).includes('〈採用報告〉') || String(messageBody).includes('<採用報告>')) {
+    try {
+      const syncSs = SpreadsheetApp.openById('1jmRdwUEUNhC2iTZyqQC3IqdBIJGZiCdR9RR2An_yvw8');
+      let queueSheet = syncSs.getSheetByName('⚙️_連携キュー');
+      if (!queueSheet) {
+        queueSheet = syncSs.insertSheet('⚙️_連携キュー');
+        queueSheet.appendRow(['リクエスト日時', 'イベント種別', 'ペイロードJSON', '処理ステータス', '処理完了日時']);
+        queueSheet.setFrozenRows(1);
+      }
+      queueSheet.appendRow([new Date(), 'SAIYO_POST', '', '未処理', '']);
+      console.log('拠点連絡システムへ採用報告の連動キューを登録しました。');
+    } catch (syncErr) {
+      console.error('拠点連動エラー（DS部への投稿自体は成功しています）: ' + syncErr.message);
+    }
+  }
+  // ▲▲▲【追加ここまで】▲▲▲
 }

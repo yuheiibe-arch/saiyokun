@@ -126,7 +126,27 @@ function onOpen() {
     .createMenu('メニュー')
     .addItem('URL取得', 'displayFormUrl')
     .addItem('DS部に投稿', 'showRecipientDialog')
+    .addItem('お久しぶり報告', 'openOhisashiburiFormDialog')
     .addToUi();
+}
+
+/**
+ * 「お久しぶり報告」のGoogleフォームを開くダイアログを表示する
+ */
+function openOhisashiburiFormDialog() {
+  const formUrl = 'https://docs.google.com/forms/d/e/1FAIpQLScrvlzS7GLE_Xn4APGZJuCXgxwLoVs8HUNTu9OH8sb1zSQdZQ/viewform?usp=header';
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family: sans-serif; text-align: center; padding: 15px;">' +
+    '<p style="margin-bottom: 18px; font-size: 14px; color: #333;">下のボタンからお久しぶり報告フォームを開いてください。</p>' +
+    '<a href="' + formUrl + '" target="_blank" onclick="google.script.host.close();" ' +
+    'style="display: inline-block; padding: 10px 24px; background-color: #1a73e8; color: #ffffff; text-decoration: none; border-radius: 4px; font-weight: bold; font-size: 14px;">' +
+    'お久しぶり報告フォームを開く</a>' +
+    '</div>'
+  )
+  .setWidth(360)
+  .setHeight(130);
+
+  SpreadsheetApp.getUi().showModalDialog(html, 'お久しぶり報告');
 }
 
 function onFormSubmit_Master(e) {
