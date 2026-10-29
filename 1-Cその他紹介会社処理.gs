@@ -2,7 +2,7 @@
 // 【1-C_その他紹介会社処理】
 // エムステージ、MRT（応募・取消し自動処理対応）、民間医局、メディウェル
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
-// ★修正内容：MRTの検索クエリから「-label:処理済み」を撤廃し、スレッド巻き込みによるすり抜けを防止
+// ★修正内容：MRTおよび民間医局の検索クエリから「-label:処理済み」を撤廃し、スレッド巻き込みによるすり抜けを防止
 // =================================================================
 
 // === エムステージ（スレッド展開・堅牢抽出対応）===
@@ -259,14 +259,23 @@ function processMRT_Application(querySuffix, processedLabel) {
   }
 }
 
-// === 民間医局（識別番号・揺らぎ対応済） ===
+// === 民間医局（識別番号・揺らぎ対応 ＆ スレッド巻き込み防止・Message-ID管理版） ===
 function processMinkanIkyoku_Application(querySuffix, processedLabel) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME_PROGRESS);
-  const processedLabelName = processedLabel.getName();
   const now = new Date();
+
+  // ★【追加】処理済みメールのIDをプロパティから取得（スレッド巻き込み・ラベル誤付与による見落としを完全防止）
+  const props = PropertiesService.getScriptProperties();
+  let processedIds = [];
+  try {
+    const stored = props.getProperty('MINKAN_PROCESSED_IDS');
+    if (stored) processedIds = JSON.parse(stored);
+  } catch (e) {}
+  let isIdUpdated = false;
   
-  const applyQuery = `subject:("【民間医局ポータル】") subject:("申し込みがありました") -label:${processedLabelName} ${querySuffix}`;
+  // ★【修正】検索クエリから「-label:紹介会社処理済み」を撤廃
+  const applyQuery = `subject:("【民間医局ポータル】") subject:("申し込みがありました") ${querySuffix}`;
   const threads = GmailApp.search(applyQuery);
   
   if (threads.length > 0) {
@@ -278,8 +287,16 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+        const messageId = message.getId();
+        // 既に処理完了したメールIDならスキップ
+        if (processedIds.includes(messageId)) return;
+
         const receivedDate = message.getDate();
-        if ((now - receivedDate) / (1000 * 60 * 60) > 48) return;
+        if ((now - receivedDate) / (1000 * 60 * 60) > 48) {
+          processedIds.push(messageId);
+          isIdUpdated = true;
+          return;
+        }
 
         const body = message.getPlainBody();
         const doctorName = extract(body, /医師名[\s ]*[:：][\s ]*(.+)/).replace(/\s/g, '');
@@ -300,6 +317,10 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
             '', '応募通知受信（手動更新要）', receivedDate, '', ''
           ]);
           if (added) threadProcessed = true;
+          
+          // シートへの追加チェックが完了したらMessage-IDを記録
+          processedIds.push(messageId);
+          isIdUpdated = true;
         }
       });
 
@@ -307,6 +328,14 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
         thread.addLabel(processedLabel);
       }
     }
+  }
+
+  // 新しく処理したID群をプロパティに保存（最新250件を保持）
+  if (isIdUpdated) {
+    if (processedIds.length > 250) {
+      processedIds = processedIds.slice(-250);
+    }
+    props.setProperty('MINKAN_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 }
 
