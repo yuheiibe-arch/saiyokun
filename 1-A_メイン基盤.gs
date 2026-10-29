@@ -455,8 +455,15 @@ function processJinjerPaidLeave_internal() {
       const applicant = applicantMatch ? applicantMatch[1].trim() : '';
 
       if (targetDateRaw && applicant) {
-        // ★修正：ソートした際に綺麗な日付順（古い順）になるよう、対象日を yyyy/MM/dd 形式に正規化
-        const normalizedTargetDate = formatDate(targetDateRaw, receivedDate) || targetDateRaw;
+        // ★修正：既存シートに合わせて「yyyy年MM月dd日」形式に統一（月日を2桁ゼロ埋めすることでソート順も完全保証）
+        let formattedTargetDate = targetDateRaw;
+        const dMatch = targetDateRaw.match(/(\d{4})[年\/\-](\d{1,2})[月\/\-](\d{1,2})/);
+        if (dMatch) {
+          const yyyy = dMatch[1];
+          const mm = ('0' + dMatch[2]).slice(-2);
+          const dd = ('0' + dMatch[3]).slice(-2);
+          formattedTargetDate = `${yyyy}年${mm}月${dd}日`;
+        }
 
         const newRowIdx = Math.max(sheet.getLastRow() + 1, 3);
         const maxCol = sheet.getLastColumn();
@@ -468,12 +475,14 @@ function processJinjerPaidLeave_internal() {
         templateRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
 
         sheet.getRange(newRowIdx, colDate).setValue(receivedDateStr);
-        sheet.getRange(newRowIdx, colTarget).setValue(normalizedTargetDate);
+        sheet.getRange(newRowIdx, colTarget)
+             .setNumberFormat('yyyy"年"mm"月"dd"日"')
+             .setValue(formattedTargetDate);
         sheet.getRange(newRowIdx, colName).setValue(applicant);
         sheet.getRange(newRowIdx, colStatus).setValue('未着手');
 
         hasNewRowAdded = true;
-        console.log(`[有給申請追加] ${applicant} : ${normalizedTargetDate}`);
+        console.log(`[有給申請追加] ${applicant} : ${formattedTargetDate}`);
       }
 
       processedIds.push(messageId);
