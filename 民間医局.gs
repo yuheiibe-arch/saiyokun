@@ -2,9 +2,10 @@
 // 【ファイル4：特定医師（民間医局）対応スクリプト（スレッド統合解析版）】
 // ★修正済み：テキスト版で消滅する給与情報をHTMLから回収
 // ★修正済み：Chatwork通知から (※要確認) を削除
-// ★今回修正1：同日複数コマ（午前＋午後など）応募時の時間上書きバグを解消し、日付と時間を完全分離
-// ★今回修正2：シート記録・通知書き出し時に「日付＋開始時間」の昇順（古い順）で自動ソート
-// ★今回修正3：テンプレート・署名の法人名を「医療法人社団ナイズ」へ自動統一
+// ★修正1：同日複数コマ（午前＋午後など）応募時の時間上書きバグを解消し、日付と時間を完全分離
+// ★修正2：シート記録・通知書き出し時に「日付＋開始時間」の昇順（古い順）で自動ソート
+// ★修正3：テンプレート・署名の法人名を「医療法人社団ナイズ」へ自動統一
+// ★今回修正：A列の医師名に合わせてB列の「宛先」を動的に取得してテンプレートへ反映
 // =============================================================
 
 const SPECIAL_CONFIG = {
@@ -16,6 +17,7 @@ const SPECIAL_CONFIG = {
 
 let specialCandidateBuffer = [];
 let cachedSpecialUniqueKeys = null;
+let globalScannerHasRun = false;
 
 // ★エントリーポイント
 function accumulateSpecialCandidate(ignoredEntryData, ignoredBody) {
@@ -25,8 +27,6 @@ function accumulateSpecialCandidate(ignoredEntryData, ignoredBody) {
 
   scanForSalaryEmails();
 }
-
-let globalScannerHasRun = false;
 
 /**
  * 「2026年11月3日 (火)」と「09:00」からソート用の数値（タイムスタンプ）を計算するヘルパー関数
@@ -55,11 +55,23 @@ function scanForSalaryEmails() {
   console.log("=== 民間医局：スレッド統合解析モード開始 ===");
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   
-  // 1. 設定・ログ読み込み
+  // 1. 設定・ログ読み込み（A列：医師名、B列：宛先 を取得）
   const settingSheet = ss.getSheetByName(SPECIAL_CONFIG.SETTING_SHEET_NAME);
   if (!settingSheet) return;
-  const targetDoctors = settingSheet.getRange(2, 1, settingSheet.getLastRow() - 1, 1).getValues()
-    .flat().filter(String).map(n => n.replace(/[\s ]+/g, ''));
+  const lastSettingRow = settingSheet.getLastRow();
+  if (lastSettingRow < 2) return;
+
+  const settingRows = settingSheet.getRange(2, 1, lastSettingRow - 1, 2).getValues();
+  const defaultRecipient = String(settingRows[0][1] || 'cc-hkt@medical-principle.co.jp').trim();
+  
+  const targetDoctors = [];
+  for (let i = 0; i < settingRows.length; i++) {
+    const docName = String(settingRows[i][0] || '').replace(/[\s ]+/g, '');
+    const recipient = String(settingRows[i][1] || '').trim() || defaultRecipient;
+    if (docName) {
+      targetDoctors.push({ name: docName, recipient: recipient });
+    }
+  }
 
   if (cachedSpecialUniqueKeys === null) {
     const logSheet = ss.getSheetByName(SPECIAL_CONFIG.LOG_SHEET_NAME);
@@ -131,12 +143,14 @@ function scanForSalaryEmails() {
 
       if (!body.includes("掲載日給額") && !body.includes("日給")) return;
 
-      // 対象医師チェック
+      // 対象医師チェック（一致した医師のB列の宛先もあわせて取得）
       let foundDoctorName = "";
+      let targetRecipient = defaultRecipient;
       const cleanBody = body.replace(/[\s ]+/g, '');
-      for (const doctor of targetDoctors) {
-        if (cleanBody.includes(doctor)) {
-          foundDoctorName = doctor;
+      for (const docObj of targetDoctors) {
+        if (cleanBody.includes(docObj.name)) {
+          foundDoctorName = docObj.name;
+          targetRecipient = docObj.recipient;
           break;
         }
       }
@@ -226,9 +240,9 @@ function scanForSalaryEmails() {
         let durationStr = "3:00:00";
         try {
           const d = new Date();
-          const y = d.getFullYear(); const m = d.getMonth(); const day = d.getDate();
-          const startD = new Date(y, m, day, parseInt(startTime.split(':')[0], 10), parseInt(startTime.split(':')[1], 10));
-          const endD = new Date(y, m, day, parseInt(endTime.split(':')[0], 10), parseInt(endTime.split(':')[1], 10));
+          const y = d.getFullYear(); const mo = d.getMonth(); const day = d.getDate();
+          const startD = new Date(y, mo, day, parseInt(startTime.split(':')[0], 10), parseInt(startTime.split(':')[1], 10));
+          const endD = new Date(y, mo, day, parseInt(endTime.split(':')[0], 10), parseInt(endTime.split(':')[1], 10));
           let diff = endD.getTime() - startD.getTime();
           if (diff < 0) diff += 24 * 60 * 60 * 1000;
           if (diff > 0) {
@@ -258,10 +272,11 @@ function scanForSalaryEmails() {
         const mMatch = workDate.match(/(\d{4})年(\d{1,2})月/);
         if (mMatch) monthStr = `${mMatch[1]}/${('00' + mMatch[2]).slice(-2)}`;
 
-        console.log(`[登録成功] ${displayDoctorName} / ${workDate} / ${salaryText} / ${startTime}-${endTime} (src:${timeSource})`);
+        console.log(`[登録成功] ${displayDoctorName} / ${workDate} / ${salaryText} / ${startTime}-${endTime} (宛先:${targetRecipient})`);
 
         specialCandidateBuffer.push({
           doctorName: displayDoctorName,
+          recipient: targetRecipient,
           workDate: workDate,
           month: monthStr,
           startTime: startTime,
@@ -346,6 +361,9 @@ function flushSpecialCandidateNotifications() {
     // 念のため医師ごとのリスト内でも日付・開始時間の昇順（古い順）を保証
     list.sort((a, b) => a.sortTime - b.sortTime);
 
+    // ★対象医師のB列の宛先を取得
+    const targetRecipient = list[0].recipient || 'cc-hkt@medical-principle.co.jp';
+
     let shiftListText = "";
     list.forEach(item => {
       shiftListText += `----------------------\n`;
@@ -358,12 +376,14 @@ function flushSpecialCandidateNotifications() {
       shiftListText += `----------------------\n`;
     });
 
+    // ★テンプレート内の「宛先 : ...」の行をその医師のB列のアドレスに置き換え
     let message = "[toall]\n" + templateRaw
+      .replace(/宛先\s*[:：]\s*[^\n\r]+/, `宛先 : ${targetRecipient}`)
       .replace(/{{DOCTOR_NAME}}/g, doctorName)
       .replace('{{SHIFT_LIST}}', shiftListText);
 
     sendToChatwork(SPECIAL_CONFIG.CHATWORK_ROOM_ID, message);
-    console.log(`通知完了: ${doctorName}`);
+    console.log(`通知完了: ${doctorName} (宛先: ${targetRecipient})`);
   }
   specialCandidateBuffer = [];
 }
