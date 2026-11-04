@@ -1,22 +1,139 @@
 // =================================================================
 // 【1-B_エムスリー処理】
-// エムスリーの応募・確定（オファー経由対応）・掲載停止・キャンセル処理
+// エムスリーの応募（通常＆オファー経由）・確定・掲載停止・キャンセル処理
 // ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
 // ★修正内容：スレッド巻き込みによるすり抜けを防止するためラベル除外条件を撤廃
 // ★追加修正：API超節約設計（Message-IDキャッシュによる既読メールのスキップ処理を実装）
 // ★修正内容：キャッシュ容量オーバー防止のため保持件数を250件に変更
+// ★今回追加：「お問い合わせがありました（オファー希望）」を進捗シートへ追加
+// ★今回修正：外部スプレッドシートの「拠点名」シート（A列:正規記載 × Q列:住所）と町名で照合
 // =================================================================
+
+const CLINIC_MASTER_SPREADSHEET_ID = '14RbsDcv0nXfEwweki8-9cK3lQUg1XUuhozLNF9u2qAs';
+const CLINIC_MASTER_SHEET_NAME = '拠点名';
+
+/**
+ * 住所文字列から番地以降を切り落とし、「町名（漢数字の丁目を含む）」までを抽出するヘルパー関数
+ * 例1: "東京都板橋区徳丸二丁目2-14..." -> "東京都板橋区徳丸二丁目"
+ * 例2: "東京都品川区小山3-15-1..."     -> "東京都品川区小山"
+ */
+function extractTownNameForMatch_internal(rawAddr) {
+  if (!rawAddr) return '';
+  let s = String(rawAddr)
+    .replace(/[０-９]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFEE0))
+    .replace(/[\s ]+/g, '');
+
+  const m = s.match(/^([^\d\-ー−―‐ｰ]+)/);
+  let town = m ? m[1] : s;
+
+  const chomeMatch = s.match(/^([^\d\-ー−―‐ｰ]+?[一二三四五六七八九十]+丁目)/);
+  if (chomeMatch) {
+    town = chomeMatch[1];
+  } else {
+    town = town.replace(/[一二三四五六七八九十]+$/, '');
+  }
+  return town;
+}
+
+/**
+ * 「拠点名」シートから【正規記載（A列）・住所（Q列）】のリストを取得する（キャッシュ付き）
+ */
+function getClinicAddressMap_internal() {
+  if (getClinicAddressMap_internal.cache) return getClinicAddressMap_internal.cache;
+
+  try {
+    const ss = SpreadsheetApp.openById(CLINIC_MASTER_SPREADSHEET_ID);
+    const sheet = ss.getSheetByName(CLINIC_MASTER_SHEET_NAME) || ss.getSheets()[0];
+    if (!sheet) return [];
+
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return [];
+
+    const headerRow = data[0].map(v => String(v).trim());
+
+    // 「正規記載」列（index 0）と「住所」列（index 16）をピンポイントで取得
+    const foundNameIdx = headerRow.indexOf('正規記載');
+    const foundAddrIdx = headerRow.indexOf('住所');
+    const nameCol = foundNameIdx !== -1 ? foundNameIdx : 0;
+    const addrCol = foundAddrIdx !== -1 ? foundAddrIdx : 16;
+
+    const map = [];
+    for (let i = 1; i < data.length; i++) {
+      const rawName = String(data[i][nameCol] || '').replace(/キャップスクリニック/g, '').trim();
+      const rawAddr = String(data[i][addrCol] || '').trim();
+      if (!rawName && !rawAddr) continue;
+
+      const townName = extractTownNameForMatch_internal(rawAddr);
+      const townWithoutChome = townName.replace(/[一二三四五六七八九十]+丁目$/, '');
+
+      map.push({
+        clinicName: rawName,
+        rawAddr: rawAddr,
+        townName: townName,
+        townWithoutChome: townWithoutChome
+      });
+    }
+
+    getClinicAddressMap_internal.cache = map;
+    return map;
+  } catch (e) {
+    console.error('拠点名マスタの読み込みエラー: ' + e.message);
+    return [];
+  }
+}
+
+/**
+ * エムスリーの勤務地（住所）を「拠点名」シートの町名と照合して「正規記載」の拠点名に変換する関数
+ */
+function convertM3AddressToClinicName_internal(rawAddress) {
+  if (!rawAddress) return '';
+  const addr = String(rawAddress).trim();
+  const inputTown = extractTownNameForMatch_internal(addr);
+  const inputTownNoChome = inputTown.replace(/[一二三四五六七八九十]+丁目$/, '');
+
+  const clinicMap = getClinicAddressMap_internal();
+
+  if (clinicMap.length > 0) {
+    // 1. 町名（漢数字の丁目を含む）で照合（文字数が長い＝より詳細な町名から優先）
+    const sortedByTown = [...clinicMap].sort((a, b) => b.townName.length - a.townName.length);
+    for (const item of sortedByTown) {
+      if (!item.townName || item.townName.length < 3) continue;
+      if (inputTown.includes(item.townName) || item.townName.includes(inputTown)) {
+        return item.clinicName;
+      }
+    }
+
+    // 2. 漢数字の丁目を除いた町名同士（例: シート側が「徳丸二丁目」でメール側が「徳丸2-14」の場合など）で照合
+    const sortedByNoChome = [...clinicMap].sort((a, b) => b.townWithoutChome.length - a.townWithoutChome.length);
+    for (const item of sortedByNoChome) {
+      if (!item.townWithoutChome || item.townWithoutChome.length < 3) continue;
+      if (inputTownNoChome.includes(item.townWithoutChome) || item.townWithoutChome.includes(inputTownNoChome)) {
+        return item.clinicName;
+      }
+    }
+
+    // 3. 住所の中にマスタの「正規記載」の拠点名そのものが含まれている場合
+    const sortedByName = [...clinicMap].sort((a, b) => b.clinicName.length - a.clinicName.length);
+    for (const item of sortedByName) {
+      if (item.clinicName && item.clinicName.length >= 2 && addr.includes(item.clinicName)) {
+        return item.clinicName;
+      }
+    }
+  }
+
+  // マスタに該当がない場合のフォールバック（切り出した町名を返す）
+  return inputTown || addr;
+}
 
 function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME_PROGRESS);
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
-  const processedLabelName = processedLabel.getName();
   
-  // 現在時刻（24時間前判定用）
+  // 現在時刻（48時間前判定用）
   const now = new Date();
 
-  // ★【追加】処理済みIDをプロパティから取得
+  // 処理済みIDをプロパティから取得
   const props = PropertiesService.getScriptProperties();
   let processedIds = [];
   try {
@@ -26,14 +143,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
   let isIdUpdated = false;
 
   // ===============================================================
-  // === 1. 応募通知の処理 ===
+  // === 1. 応募通知（通常応募 ＆ オファー希望）の処理 ===
   // ===============================================================
-  // ★ ラベル除外を撤廃（既存案件の二重処理はスクリプト内のロジックで防止済み）
-  const applyQuery = `from:(career_spot@m3career.com) subject:("ご勤務希望がありました") ${querySuffix}`;
+  const applyQuery = `from:(career_spot@m3career.com) subject:("ご勤務希望がありました" OR "お問い合わせがありました") ${querySuffix}`;
   const applyThreads = GmailApp.search(applyQuery);
   
   if (applyThreads.length > 0) {
-    // ★ API通信1回で全メッセージを一括取得
     const applyMessagesAll = GmailApp.getMessagesForThreads(applyThreads);
     
     for (let i = 0; i < applyThreads.length; i++) {
@@ -43,47 +158,98 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
       
       messages.forEach(message => {
         const messageId = message.getId();
-        // ★【追加】既に処理したメールIDなら、本文を取得する前にスキップ（API消費ゼロ）
         if (processedIds.includes(messageId)) return;
-        processedIds.push(messageId); // 先に処理済みとして登録
-        isIdUpdated = true;
 
-        // ★ 古すぎるメールのストッパー
         const messageDate = message.getDate();
-        if ((now - messageDate) / (1000 * 60 * 60) > 48) return; 
+        if ((now - messageDate) / (1000 * 60 * 60) > 48) {
+          processedIds.push(messageId);
+          isIdUpdated = true;
+          return; 
+        }
 
         const subject = message.getSubject();
         const body = message.getPlainBody();
-        
-        const doctorName = extractM3DoctorName(subject);
-        const jobId = extract(subject, /(C\d+)/) || extract(body, /求人票ID：\s*([A-Za-z0-9]+)/);
-        
-        const addressMatch = body.match(/勤務地：([^\d\n]+)/);
-        const address = addressMatch ? addressMatch[1].trim() : extract(body, /^医療法人社団.+キャップスクリニック(.+)様/m).replace(/店$/, '');
-        const deptMatch = body.match(/募集科目：\s*(.+)/);
-        let department = deptMatch ? deptMatch[1].trim() : (findDepartmentFromHistory(ss, doctorName) || '小児科');
-        const newLocationName = address + '（' + department + '）';
-        
-        let workDateRaw = extract(body, /勤務日：(.+)/);
-        if (!workDateRaw) {
-          const dateMatch = body.match(/勤務時間：\s*(.*?)(?=\d{1,2}:\d{2})/);
-          if (dateMatch) workDateRaw = dateMatch[1].trim();
+
+        // 「お問い合わせがありました」の場合は、オファー希望メールかどうかを判定
+        let isOfferApply = false;
+        if (subject.includes('お問い合わせがありました')) {
+          const cleanBodyForCheck = body.replace(/[\r\n\s ]+/g, '');
+          const offerKeyword = '■オファーを出される前にご確認ください・医師のご専門や可能／不可能な手技など必要に応じて直接先生にご確認ください。';
+          if (cleanBodyForCheck.includes(offerKeyword)) {
+            isOfferApply = true;
+          } else {
+            // オファー希望ではない通常の問い合わせは処理済みIDに記録してスキップ
+            processedIds.push(messageId);
+            isIdUpdated = true;
+            return;
+          }
         }
-        const timeRegex = /勤務時間：.*?\)\s*(\d{1,2}:\d{2}\s*[〜~〜\-]\s*\d{1,2}:\d{2})/;
+
+        processedIds.push(messageId);
+        isIdUpdated = true;
+        
+        // 医師名の抽出（本文に「氏名：」があれば優先、なければ件名から抽出）
+        const bodyDocMatch = body.match(/氏名[\s:：]*([^\n\r]+)/);
+        const doctorName = bodyDocMatch ? bodyDocMatch[1].trim() : extractM3DoctorName(subject);
+
+        // 求人票ID（識別番号）の抽出
+        const jobId = extract(subject, /(C\d+)/) || extract(body, /求人票ID[\s:：]*([A-Za-z0-9]+)/);
+        
+        // 勤務地（住所）の抽出と「拠点名」シートを使った拠点名変換
+        const addressMatch = body.match(/勤務地[\s:：]*([^\n\r]+)/);
+        const rawAddress = addressMatch ? addressMatch[1].trim() : extract(body, /^医療法人社団.+キャップスクリニック(.+)様/m).replace(/店$/, '');
+        const clinicBaseName = convertM3AddressToClinicName_internal(rawAddress);
+
+        // 診療科の抽出
+        const deptMatch = body.match(/募集科目[\s:：]*(.+)/);
+        let department = deptMatch ? deptMatch[1].trim() : (findDepartmentFromHistory(ss, doctorName) || '小児科');
+        
+        // 拠点名の設定（オファー経由は変換後の拠点名のみ、通常応募は従来通り「拠点名（診療科）」）
+        const newLocationName = isOfferApply ? clinicBaseName : (rawAddress.replace(/\d.*$/, '').trim() + '（' + department + '）');
+        
+        // 「最新勤務日:2026年9月30日」を誤って拾わないよう、
+        // ①「勤務時間：11/15(日)...」の日付部分 → ②行頭の「勤務日：」 → ③件名の「スポット 11月15日」の順で抽出
+        let workDateRaw = '';
+        const timeLineDateMatch = body.match(/勤務時間[\s:：]*\s*(\d{1,2}\/\d{1,2}(?:\([月火水木金土日]\))?)/);
+        if (timeLineDateMatch) {
+          workDateRaw = timeLineDateMatch[1].trim();
+        } else {
+          workDateRaw = extract(body, /^[\s ]*勤務日[\s:：]*(.+)/m);
+        }
+        if (!workDateRaw) {
+          const subjDateMatch = subject.match(/(\d{1,2}月\d{1,2}日)/);
+          if (subjDateMatch) workDateRaw = subjDateMatch[1].trim();
+        }
+
+        // 該当時間の抽出（例: 10:00〜13:00）
+        const timeRegex = /勤務時間[\s:：]*.*?\)\s*(\d{1,2}:\d{2}\s*[〜~～\-]\s*\d{1,2}:\d{2})/;
         const timeMatch = body.match(timeRegex);
-        const workTime = timeMatch ? timeMatch[1].trim() : extract(body, /勤務時間：\s*(\d{1,2}:\d{2}.+)/);
+        const workTime = timeMatch ? timeMatch[1].trim() : extract(body, /勤務時間[\s:：]*\s*(\d{1,2}:\d{2}.+)/);
+
+        // J列（処理状況）：オファー希望は「オファー経由」、通常応募は「応募通知受信」
+        const processStatusText = isOfferApply ? 'オファー経由' : '応募通知受信';
 
         const added = appendRowAndFormatUnique(sheet, [
-          'エムスリー', formatDate(workDateRaw, messageDate), workTime, newLocationName, department, 
+          'エムスリー', 
+          formatDate(workDateRaw, messageDate), 
+          workTime, 
+          newLocationName, 
+          department, 
           jobId, 
-          doctorName, extract(body, /(https:\/\/career\.m3\.com\/admin\/hospital\/message_threads\/\d+)/), 
-          '', '応募通知受信', messageDate, '', '', jobId 
+          doctorName, 
+          extract(body, /(https:\/\/career\.m3\.com\/admin\/hospital\/message_threads\/\d+)/), 
+          '', 
+          processStatusText, 
+          messageDate, 
+          '', 
+          '', 
+          jobId 
         ]);
         if (added) threadProcessed = true;
       });
       
       if (threadProcessed) {
-          thread.addLabel(processedLabel);
+        thread.addLabel(processedLabel);
       }
     }
   }
@@ -104,7 +270,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 
       messages.forEach(message => {
         const messageId = message.getId();
-        // ★【追加】既に処理したメールIDならスキップ
         if (processedIds.includes(messageId)) return;
         processedIds.push(messageId);
         isIdUpdated = true;
@@ -119,11 +284,11 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         let status = '';
         
         if (subject.includes('勤務を確定') || subject.includes('勤務が確定') || body.includes('勤務を確定いたしました') || subject.includes('勤務確定')) {
-            type = '確定';
-            status = '勤務確定';
+          type = '確定';
+          status = '勤務確定';
         } else if (subject.includes('をお断り') || body.includes('をお断り')) {
-            type = 'お断り';
-            status = 'お断り済み';
+          type = 'お断り';
+          status = 'お断り済み';
         }
         
         if (!type) return; 
@@ -154,107 +319,106 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         let isOffer = false;
 
         if (type === '確定') {
-            const offerQuery = `from:career_spot@m3career.com subject:"お問い合わせがありました" "${mailJobId}"`;
-            const offerThreads = GmailApp.search(offerQuery, 0, 1);
+          const offerQuery = `from:career_spot@m3career.com subject:"お問い合わせがありました" "${mailJobId}"`;
+          const offerThreads = GmailApp.search(offerQuery, 0, 1);
+          
+          if (offerThreads.length > 0) {
+            isOffer = true;
+            const offerBody = offerThreads[0].getMessages()[0].getPlainBody();
             
-            if (offerThreads.length > 0) {
-                isOffer = true;
-                const offerBody = offerThreads[0].getMessages()[0].getPlainBody();
-                
-                const clinicMatch = offerBody.match(/勤務地[\s:：]*([^\n\r]+)/);
-                if (clinicMatch) {
-                    fetchedClinic = clinicMatch[1].trim();
-                    const shortClinicMatch = fetchedClinic.match(/^([^\d０-９]+)/);
-                    if (shortClinicMatch) fetchedClinic = shortClinicMatch[1].trim();
-                }
-
-                const timeMatch = offerBody.match(/勤務時間[\s:：]*[^\n\r]*?(\d{1,2}:\d{2}\s*[〜~〜\-]\s*\d{1,2}:\d{2})/);
-                if (timeMatch) fetchedWorkTime = timeMatch[1].trim();
-
-                const msgMatch = body.match(/その他連絡事項:\s*([\s\S]*?)(?=また、勤務日が近づかれましたら|※ご勤務確定後に|━━━━━━━━━━━━)/);
-                if (msgMatch) doctorMessage = msgMatch[1].trim();
+            const clinicMatch = offerBody.match(/勤務地[\s:：]*([^\n\r]+)/);
+            if (clinicMatch) {
+              fetchedClinic = convertM3AddressToClinicName_internal(clinicMatch[1].trim());
             }
+
+            const timeMatch = offerBody.match(/勤務時間[\s:：]*[^\n\r]*?(\d{1,2}:\d{2}\s*[〜~～\-]\s*\d{1,2}:\d{2})/);
+            if (timeMatch) fetchedWorkTime = timeMatch[1].trim();
+
+            const msgMatch = body.match(/その他連絡事項:\s*([\s\S]*?)(?=また、勤務日が近づかれましたら|※ご勤務確定後に|━━━━━━━━━━━━)/);
+            if (msgMatch) doctorMessage = msgMatch[1].trim();
+          }
         }
 
         let rowNum = -1;
         const sheetData = sheet.getDataRange().getValues();
         for (let j = sheetData.length - 1; j > 0; j--) {
-            const rowAgency = String(sheetData[j][0]).trim();
-            if (rowAgency !== 'エムスリー') continue;
-            
-            const rowStatus = String(sheetData[j][9]).trim();
-            if (!rowStatus.includes('応募通知受信')) continue;
+          const rowAgency = String(sheetData[j][0]).trim();
+          if (rowAgency !== 'エムスリー') continue;
+          
+          const rowStatus = String(sheetData[j][9]).trim();
+          // 「応募通知受信」と「オファー経由」の両方を進捗シートの検索対象にする
+          if (!rowStatus.includes('応募通知受信') && !rowStatus.includes('オファー経由')) continue;
 
-            const rowJobId = String(sheetData[j][5]).trim();
+          const rowJobId = String(sheetData[j][5]).trim();
 
-            if (rowJobId === mailJobId) {
-                rowNum = j + 1;
-                break;
-            }
+          if (rowJobId === mailJobId) {
+            rowNum = j + 1;
+            break;
+          }
         }
         
         let isNewlyProcessed = false;
 
         if (rowNum !== -1) {
-            let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
-            if (!values[2] && fetchedWorkTime) values[2] = fetchedWorkTime;
-            if (!values[3] && fetchedClinic) values[3] = fetchedClinic;
+          let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+          if (!values[2] && fetchedWorkTime) values[2] = fetchedWorkTime;
+          if (!values[3] && fetchedClinic) values[3] = fetchedClinic;
 
-            values[8] = type; values[9] = status; values[11] = new Date();
+          values[8] = type; values[9] = status; values[11] = new Date();
+          
+          appendRowToArchive(sheet, archiveSheet, values, type === '確定' ? '採用' : '不採用');
+          safeDeleteRow(sheet, rowNum);
+          
+          isNewlyProcessed = true;
+          threadProcessed = true;
+        } else if (type === '確定') {
+          const archiveData = archiveSheet.getDataRange().getValues();
+          let isExistInArchive = false;
+
+          for (let j = archiveData.length - 1; j > 0; j--) {
+            const rowAgency = String(archiveData[j][0]).trim();
+            if (rowAgency !== 'エムスリー') continue;
+            const rowJobId = String(archiveData[j][5]).trim();
+
+            if (rowJobId === mailJobId) {
+              isExistInArchive = true;
+              break;
+            }
+          }
+
+          if (!isExistInArchive) {
+            const m3ThreadUrl = extract(body, /(https:\/\/career\.m3\.com\/admin\/hospital\/message_threads\/\d+)/);
+            const uniqueId = mailJobId;
+            const displayDocName = nameMatch ? nameMatch[1].trim() : mailDoctorName;
             
-            appendRowToArchive(sheet, archiveSheet, values, type === '確定' ? '採用' : '不採用');
-            safeDeleteRow(sheet, rowNum);
+            const tempValues = [
+              'エムスリー', mailDateStr, fetchedWorkTime, fetchedClinic, '', 
+              mailJobId, 
+              displayDocName, m3ThreadUrl, 
+              '確定', status, new Date(), '', '', uniqueId
+            ];
+            
+            appendRowToArchive(null, archiveSheet, tempValues, '採用');
             
             isNewlyProcessed = true;
             threadProcessed = true;
-        } else if (type === '確定') {
-            const archiveData = archiveSheet.getDataRange().getValues();
-            let isExistInArchive = false;
-
-            for (let j = archiveData.length - 1; j > 0; j--) {
-              const rowAgency = String(archiveData[j][0]).trim();
-              if (rowAgency !== 'エムスリー') continue;
-              const rowJobId = String(archiveData[j][5]).trim();
-
-              if (rowJobId === mailJobId) {
-                isExistInArchive = true;
-                break;
-              }
-            }
-
-            if (!isExistInArchive) {
-              const m3ThreadUrl = extract(body, /(https:\/\/career\.m3\.com\/admin\/hospital\/message_threads\/\d+)/);
-              const uniqueId = mailJobId;
-              const displayDocName = nameMatch ? nameMatch[1].trim() : mailDoctorName;
-              
-              const tempValues = [
-                'エムスリー', mailDateStr, fetchedWorkTime, fetchedClinic, '', 
-                mailJobId, 
-                displayDocName, m3ThreadUrl, 
-                '確定', status, new Date(), '', '', uniqueId
-              ];
-              
-              appendRowToArchive(null, archiveSheet, tempValues, '採用');
-              
-              isNewlyProcessed = true;
-              threadProcessed = true;
-            }
+          }
         }
 
         if (isOffer && isNewlyProcessed) {
-            let displayDate = mailDateStr;
-            const dMatch = subject.match(/(\d{1,2}月\d{1,2}日.*?\))/);
-            if (dMatch) {
-                displayDate = String(messageDate.getFullYear()) + "年" + dMatch[1].replace('(', '日('); 
-            } else if (mailDateStr) {
-                 const d = new Date(mailDateStr);
-                 const dayMap = ['日', '月', '火', '水', '木', '金', '土'];
-                 displayDate = Utilities.formatDate(d, 'JST', 'yyyy年MM月dd日') + `(${dayMap[d.getDay()]})`;
-            }
-            
-            const displayDocName = nameMatch ? nameMatch[1].trim() : mailDoctorName;
+          let displayDate = mailDateStr;
+          const dMatch = subject.match(/(\d{1,2}月\d{1,2}日.*?\))/);
+          if (dMatch) {
+            displayDate = String(messageDate.getFullYear()) + "年" + dMatch[1].replace('(', '日('); 
+          } else if (mailDateStr) {
+            const d = new Date(mailDateStr);
+            const dayMap = ['日', '月', '火', '水', '木', '金', '土'];
+            displayDate = Utilities.formatDate(d, 'JST', 'yyyy年MM月dd日') + `(${dayMap[d.getDay()]})`;
+          }
+          
+          const displayDocName = nameMatch ? nameMatch[1].trim() : mailDoctorName;
 
-            const cwMessage = `[info][title]（オファー経由）勤務確定[/title]
+          const cwMessage = `[info][title]（オファー経由）勤務確定[/title]
 日時：${displayDate}
 識別番号：${mailJobId}
 拠点：${fetchedClinic}
@@ -265,12 +429,12 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 受信時刻：${Utilities.formatDate(messageDate, 'JST', 'yyyy/MM/dd HH:mm')}
 [/info]`;
 
-            sendToChatwork('419888887', cwMessage);
+          sendToChatwork('419888887', cwMessage);
         }
       });
       
       if (threadProcessed) {
-          thread.addLabel(processedLabel); 
+        thread.addLabel(processedLabel); 
       }
     }
   }
@@ -291,7 +455,6 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 
       messages.forEach(message => {
         const messageId = message.getId();
-        // ★【追加】既に処理したメールIDならスキップ
         if (processedIds.includes(messageId)) return;
         processedIds.push(messageId);
         isIdUpdated = true;
@@ -306,28 +469,28 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
         let rowNum = -1;
         const sheetData = sheet.getDataRange().getValues();
         for (let j = sheetData.length - 1; j > 0; j--) {
-            const rowAgency = String(sheetData[j][0]).trim();
-            const rowJobId = String(sheetData[j][5]).trim();
-            const rowStatus = String(sheetData[j][9]).trim();
-            if (rowAgency === 'エムスリー' && rowStatus.includes('応募通知受信') && rowJobId === mailJobId) {
-                rowNum = j + 1;
-                break;
-            }
+          const rowAgency = String(sheetData[j][0]).trim();
+          const rowJobId = String(sheetData[j][5]).trim();
+          const rowStatus = String(sheetData[j][9]).trim();
+          if (rowAgency === 'エムスリー' && (rowStatus.includes('応募通知受信') || rowStatus.includes('オファー経由')) && rowJobId === mailJobId) {
+            rowNum = j + 1;
+            break;
+          }
         }
 
         if (rowNum !== -1) {
-            let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
-            values[8] = 'お断り'; values[9] = '掲載停止'; values[11] = new Date();
-            
-            appendRowToArchive(sheet, archiveSheet, values, '不採用');
-            safeDeleteRow(sheet, rowNum);
-            
-            threadProcessed = true;
+          let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+          values[8] = 'お断り'; values[9] = '掲載停止'; values[11] = new Date();
+          
+          appendRowToArchive(sheet, archiveSheet, values, '不採用');
+          safeDeleteRow(sheet, rowNum);
+          
+          threadProcessed = true;
         }
       });
 
       if (threadProcessed) {
-          thread.addLabel(processedLabel);
+        thread.addLabel(processedLabel);
       }
     }
   }
@@ -347,63 +510,62 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
-          const messageId = message.getId();
-          // ★【追加】既に処理したメールIDならスキップ
-          if (processedIds.includes(messageId)) return;
-          processedIds.push(messageId);
-          isIdUpdated = true;
+        const messageId = message.getId();
+        if (processedIds.includes(messageId)) return;
+        processedIds.push(messageId);
+        isIdUpdated = true;
 
-          const body = message.getPlainBody();
-          const subject = message.getSubject();
-          
-          const jobIdMatch = body.match(/([CＣ]\d+)/) || subject.match(/([CＣ]\d+)/);
-          const mailJobId = jobIdMatch ? jobIdMatch[1].trim() : '';
-          if (!mailJobId) return;
+        const body = message.getPlainBody();
+        const subject = message.getSubject();
+        
+        const jobIdMatch = body.match(/([CＣ]\d+)/) || subject.match(/([CＣ]\d+)/);
+        const mailJobId = jobIdMatch ? jobIdMatch[1].trim() : '';
+        if (!mailJobId) return;
 
-          const archiveData = archiveSheet.getDataRange().getValues();
-          const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
-          let updatedInArchive = false;
+        const archiveData = archiveSheet.getDataRange().getValues();
+        const archSaiyoColIndex = getColIndex_internal(archiveSheet, '採用可否');
+        let updatedInArchive = false;
 
-          for (let j = archiveData.length - 1; j > 0; j--) {
-              const rowAgency = String(archiveData[j][0]).trim();
-              const rowJobId = String(archiveData[j][5]).trim();
+        for (let j = archiveData.length - 1; j > 0; j--) {
+          const rowAgency = String(archiveData[j][0]).trim();
+          const rowJobId = String(archiveData[j][5]).trim();
 
-              if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
-                  if (archSaiyoColIndex > 0) {
-                      const cell = archiveSheet.getRange(j + 1, archSaiyoColIndex);
-                      cell.setValue('不採用');
-                      cell.setBackground('#ffe599');
-                  }
-                  updatedInArchive = true;
-                  threadProcessed = true;
-                  break;
-              }
+          if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
+            if (archSaiyoColIndex > 0) {
+              const cell = archiveSheet.getRange(j + 1, archSaiyoColIndex);
+              cell.setValue('不採用');
+              cell.setBackground('#ffe599');
+            }
+            updatedInArchive = true;
+            threadProcessed = true;
+            break;
           }
+        }
 
-          if (!updatedInArchive) {
-              const sheetData = sheet.getDataRange().getValues();
-              for (let j = sheetData.length - 1; j > 0; j--) {
-                  const rowAgency = String(sheetData[j][0]).trim();
-                  const rowJobId = String(sheetData[j][5]).trim();
-                  if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
-                      let values = sheet.getRange(j + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
-                      values[8] = 'お断り'; values[9] = 'キャンセル済み'; values[11] = new Date();
-                      appendRowToArchive(sheet, archiveSheet, values, '不採用');
-                      safeDeleteRow(sheet, j + 1);
-                      threadProcessed = true;
-                      break;
-                  }
-              }
+        if (!updatedInArchive) {
+          const sheetData = sheet.getDataRange().getValues();
+          for (let j = sheetData.length - 1; j > 0; j--) {
+            const rowAgency = String(sheetData[j][0]).trim();
+            const rowJobId = String(sheetData[j][5]).trim();
+            if (rowAgency === 'エムスリー' && rowJobId === mailJobId) {
+              let values = sheet.getRange(j + 1, 1, 1, sheet.getLastColumn()).getValues()[0];
+              values[8] = 'お断り'; values[9] = 'キャンセル済み'; values[11] = new Date();
+              appendRowToArchive(sheet, archiveSheet, values, '不採用');
+              safeDeleteRow(sheet, j + 1);
+              threadProcessed = true;
+              break;
+            }
           }
+        }
       });
 
       if (threadProcessed) {
-          thread.addLabel(processedLabel);
+        thread.addLabel(processedLabel);
       }
     }
   }
 
-  // ★【追加】新しく処理したID群をプロパティに保存（安全のため最新250件のみ保持）
+  // 新しく処理したID群をプロパティに保存（最新250件のみ保持）
   if (isIdUpdated) {
     if (processedIds.length > 250) {
       processedIds = processedIds.slice(-250);

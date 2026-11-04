@@ -139,14 +139,19 @@ function checkAndLogEmergencyCancel_internal() {
 
       // Chatwork & Slack への通知作成（共通関数.gs の「直近緊急キャンセル」判定と連動）
       const cancelTypeTitle = subject.includes('3日以内') ? '直近緊急キャンセル（3日以内）' : '緊急キャンセル（2週間以内）';
-      const cwMessage = `[toall]\n[info][title]${cancelTypeTitle}[/title]\n下記の医師からキャンセル申請が届きました。\n担当者は内容を至急ご確認ください。\n\n医師名：${doctorName} 先生\n勤務拠点名：${clinic} ${department}\nキャンセル日付：${workDate}\n勤務時間：${workTime}\n受信時刻：${receivedDateStr}\n[/info]`;
+      const cancelInfoBlock = `[info][title]${cancelTypeTitle}[/title]\n下記の医師からキャンセル申請が届きました。\n担当者は内容を至急ご確認ください。\n\n医師名：${doctorName} 先生\n勤務拠点名：${clinic} ${department}\nキャンセル日付：${workDate}\n勤務時間：${workTime}\n受信時刻：${receivedDateStr}\n[/info]`;
 
-      // ① 既存のキャンセルログルーム（344086172）＋ Slack へ送信
-      sendToChatwork(CANCEL_LOG_CHATWORK_ROOM_ID, cwMessage);
+      // ① 既存のキャンセルログルーム（344086172）＋ Slack へ送信（従来通り [toall] のみ）
+      const cwMessageOriginal = `[toall]\n${cancelInfoBlock}`;
+      sendToChatwork(CANCEL_LOG_CHATWORK_ROOM_ID, cwMessageOriginal);
       Utilities.sleep(1000);
 
-      // ② ★追加：指定ルーム（449648673）へも送信（Slack二重送信を防ぐためChatworkのみへ投下）
-      sendChatworkOnly_internal(EXTRA_EMERGENCY_CANCEL_CW_ROOM_ID, cwMessage);
+      // ② ★修正：指定ルーム（449648673）へは [toall] ＋ 該当拠点 ＋ 該当拠点長 のメンションを付与して送信
+      const clinicMentionLines = (typeof getClinicAndManagerMentionText_internal === 'function')
+        ? getClinicAndManagerMentionText_internal(clinic)
+        : '';
+      const cwMessageExtra = `[toall]\n${clinicMentionLines}${cancelInfoBlock}`;
+      sendChatworkOnly_internal(EXTRA_EMERGENCY_CANCEL_CW_ROOM_ID, cwMessageExtra);
       Utilities.sleep(1500);
 
       processedIds.push(messageId);
@@ -227,7 +232,6 @@ function checkInformalCancel_internal() {
     return;
   }
 
-  // ★★★【改善】除外する送信元をGmailの検索クエリ（-from:）に直接組み込み、GASでの無駄なループを排除
   const userEmail = Session.getActiveUser().getEmail();
   const excludeDomains = [
     'caps365.jp', 'mns.jp', 'mnys.jp', 'm3career.com', 'gemini-notes@google.com', 
@@ -238,7 +242,6 @@ function checkInformalCancel_internal() {
   const timeQuery = `(${timeKeywords.join(' OR ')})`;
   const actionQuery = `(${actionKeywords.join(' OR ')})`;
   
-  // ★★★【改善】検索期間を14日から実運用レベルの2日間に短縮（過去の巨大なメール群の読み込みを防止）
   const gmailQuery = `${timeQuery} ${actionQuery} ${excludeQuery} newer_than:2d`;
 
   console.log(`Gmail検索クエリ: ${gmailQuery}`);
