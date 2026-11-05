@@ -2,6 +2,7 @@
 // 【2-C_直前応募_シート監視と通知 (Part 2 & Part 3)】
 // ・Part 2: 「紹介会社進捗」「処理済み」シートから直前応募を検知・通知
 // ・Part 3: 「通知履歴」シートから未送信の直前応募を通知し「直前通知」へ転記
+// ★修正：449648673 への通知はキューに貯め、2-A側で拠点ごとにまとめて一括送信
 // =================================================================
 
 function part2_checkForAgencyUrgentApplications() {
@@ -149,10 +150,9 @@ function part2_checkForAgencyUrgentApplications() {
       let slackSuccess = sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
       let cwSuccess = sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
 
-      // ② 449648673 ルームへの送信（拠点・拠点長メンション＋＜重要＞注意書きフォーマット）
+      // ② ★449648673 ルーム用のまとめ送信キューに追加
       if (cwSuccess) {
-        Utilities.sleep(1000);
-        sendUrgentApplyToExtraRoom_internal(clinic, displayWorkDateJp, workTime, doctorName, isNightUrgent);
+        queueUrgentApplyForExtraRoom_internal(clinic, displayWorkDateJp, workTime, doctorName, isNightUrgent);
       }
 
       if (slackSuccess || cwSuccess) {
@@ -221,10 +221,9 @@ function part3_postToChatworkFromSheet() {
       let slackSuccess = isSlackDone ? true : sendUrgentAlertToSlack_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
       let cwSuccess = isCwDone ? true : sendUrgentAlertToChatwork_internal(URGENT_APPLY_CHATWORK_ROOM_ID, message);
 
-      // ② 449648673 ルームへの送信（まだCW送信が完了していなかった場合のみ送信）
+      // ② ★449648673 ルーム用のまとめ送信キューに追加（まだCW送信が完了していなかった場合のみ）
       if (!isCwDone && cwSuccess) {
-        Utilities.sleep(1000);
-        sendUrgentApplyToExtraRoom_internal(clinic, workDate, workTime, doctorName, isNight);
+        queueUrgentApplyForExtraRoom_internal(clinic, workDate, workTime, doctorName, isNight);
       }
 
       if (slackSuccess && cwSuccess) {

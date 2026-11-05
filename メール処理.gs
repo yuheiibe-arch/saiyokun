@@ -164,3 +164,11 @@ function createDsChatMessage(values, fileInfoBlock, submitterName) {
   const bodyParts = [ '〈DS承認報告〉', tantoSha, summaryBlock, detailsBlock, hrBlock, nextActionBlock, getValue(values, '参考URL（勤務先etc）'), keirekiBlock, getValue(values, '所感・申し送り事項'), fileInfoBlock ];
   return bodyParts.filter(String).join('\n\n');
 }
+// ※必要な場合のみ「メール処理.gs」の末尾に追加
+function onEdit_processUrlSheet(e) {
+  if (!e || !e.range) return;
+  const sheet = e.range.getSheet();
+  if (sheet.getName() === URL_SHEET_NAME && e.range.getA1Notation() === 'A2') {
+    displayFormUrl();
+  }
+}
