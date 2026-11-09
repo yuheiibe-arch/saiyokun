@@ -161,4 +161,11 @@ function onFormSubmit_Master(e) {
   } catch (err) {
     console.error(`autoRecordOnFormSubmit でエラー: ${err}`);
   }
+
+  // ▼▼▼【追加】caps側（週次・月次報告エージェント）へ暗号化送信 ▼▼▼
+  try {
+    if (typeof sendEncryptedFormEventToCaps === 'function') sendEncryptedFormEventToCaps(e);
+  } catch (err) {
+    console.error(`sendEncryptedFormEventToCaps でエラー: ${err}`);
+  }
 }
