@@ -1,5 +1,5 @@
 // =============================================================
-// ▼▼▼ トリガーで動作するメイン関数群（エラー独立・連鎖停止防止版） ▼▼▼
+// ▼▼▼ トリガーで動作するメイン関数群（エラー独立・連鎖停止防止・高速化版） ▼▼▼
 // =============================================================
 
 /**
@@ -9,21 +9,20 @@
  */
 function executeAllGmailProcesses_v2() {
   const lock = LockService.getUserLock();
-  if (!lock.tryLock(30000)) { 
+  if (!lock.tryLock(30000)) {
     console.log('executeAllGmailProcesses_v2: 他のプロセスが実行中のためスキップしました。');
-    return; 
+    return;
   }
-  
+
   const startTime = new Date();
   console.log('=============== 【大司令塔 v2】プロセスを開始 ===============');
-  
+
   try {
-    // ★ 9つの処理を配列化して一括管理（コードがスッキリし、途中停止させやすくなります）
     const tasks = [
       { name: '(1/9) メール自動処理', run: () => mainProcessEmails_internal() },
       { name: '(2/9) 直前応募通知', run: () => executeAllProcesses_internal() },
       { name: '(3/9) 緊急キャンセル', run: () => { if (typeof checkAndLogEmergencyCancel_internal === 'function') checkAndLogEmergencyCancel_internal(); } },
-      { name: '(4/9) 紹介会社キャンセル反映', run: () => { if (typeof processAgencyCancelEmails_internal === 'function') processAgencyCancelEmails_internal(); } }, // ★追加
+      { name: '(4/9) 紹介会社キャンセル反映', run: () => { if (typeof processAgencyCancelEmails_internal === 'function') processAgencyCancelEmails_internal(); } },
       { name: '(5/9) 時間外着信', run: () => { if (typeof checkTimegaiCallWithLabel_internal === 'function') checkTimegaiCallWithLabel_internal(); } },
       { name: '(6/9) 非定型キャンセル', run: () => { if (typeof checkInformalCancel_internal === 'function') checkInformalCancel_internal(); } },
       { name: '(7/9) エムスリーメッセージ', run: () => { if (typeof processM3Messages_internal === 'function') processM3Messages_internal(); } },
@@ -32,27 +31,31 @@ function executeAllGmailProcesses_v2() {
     ];
 
     for (const task of tasks) {
+      // ★ 6分タイムアウト安全装置：開始から310秒を超えていたら次回トリガーに譲って安全終了
+      if ((Date.now() - startTime.getTime()) > 310 * 1000) {
+        console.warn(`⏱ 実行時間が310秒を超えたため、タイムアウト防止で「${task.name}」以降を次回トリガーへ持ち越します。`);
+        break;
+      }
+
       try {
-        console.log(`\n--- ${task.name} を開始 ---`); 
+        console.log(`\n--- ${task.name} を開始 ---`);
         task.run();
         console.log(`--- ${task.name} が完了 ---`);
       } catch (e) {
         console.error(`【エラー】${task.name}で失敗: ${e.message}`);
-        
-        // ★ API制限（上限エラー）を検知した場合、Slackへ通知して後続処理をすべて強制停止する
-        const errorMsg = e.message.toLowerCase();
+
+        const errorMsg = String(e.message || '').toLowerCase();
         if (errorMsg.includes('too many times') || errorMsg.includes('quota') || errorMsg.includes('limit exceeded')) {
           sendApiErrorToSlack_internal(task.name, e.message);
           console.log('API制限エラーを検知したため、無駄な通信を避けるべく後続の全タスクをキャンセルしました。');
-          break; // ループを抜け出して大司令塔を終了
+          break;
         }
       }
-      // ★修正：タスク間の休憩を長めに取る（APIブロック回避）
-      Utilities.sleep(3000); 
+      // ★合理化：新着0件時の空待ち（旧3000ms×9=27秒）を300msに短縮（実際のChatwork送信時は各関数内で待機）
+      Utilities.sleep(300);
     }
 
   } finally {
-    // 途中でストップしても確実にロックを解除する
     lock.releaseLock();
     const endTime = new Date();
     const duration = (endTime.getTime() - startTime.getTime()) / 1000;
@@ -68,23 +71,21 @@ function sendApiErrorToSlack_internal(stepName, errorMessage) {
     const webhookUrl = PropertiesService.getScriptProperties().getProperty('SLACK_WEBHOOK_URL');
     if (!webhookUrl) return;
 
-    // ★ 1日1回制限のための日付チェック
     const props = PropertiesService.getScriptProperties();
     const todayStr = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd');
     const lastErrorDate = props.getProperty('LAST_API_ERROR_DATE');
 
     if (lastErrorDate === todayStr) {
       console.log('本日のAPI制限エラーは通知済みのため、Slackへの送信をスキップします。');
-      return; // 同じ日ならここで処理を止めて通知しない
+      return;
     }
 
-    // ★ 時間帯によるメンション制御（日本時間 07:00 〜 18:59 はメンションあり）
     const currentHour = parseInt(Utilities.formatDate(new Date(), 'JST', 'H'), 10);
     const isDayTime = (currentHour >= 7 && currentHour < 19);
     const channelMention = isDayTime ? "<!channel>\n" : "";
 
     const payload = {
-      channel: 'C09TRHGU64D', // 共通関数.gsで定義されているデフォルト通知先のSlackチャンネル
+      channel: 'C09TRHGU64D',
       text: `${channelMention}*【🚨 システムエラー・処理停止】*\nGoogle APIの1日あたりの上限（Quota）に到達したため、大司令塔の処理を強制停止しました。\n\n*・発生箇所:* ${stepName}\n*・エラー内容:* \`${errorMessage}\`\n\n※制限がリセットされるまで、自動連携が一時的にストップします。手動での確認をお願いします。`
     };
 
@@ -93,8 +94,7 @@ function sendApiErrorToSlack_internal(stepName, errorMessage) {
       contentType: "application/json",
       payload: JSON.stringify(payload)
     });
-    
-    // 通知が成功したら、今日の日付をプロパティに保存
+
     props.setProperty('LAST_API_ERROR_DATE', todayStr);
     console.log('SlackへAPI制限エラーの警告を送信しました。');
 
@@ -155,14 +155,13 @@ function onFormSubmit_Master(e) {
   } catch (err) {
     console.error(`processFormResponse でエラー: ${err}`);
   }
-  
+
   try {
     if (typeof autoRecordOnFormSubmit === 'function') autoRecordOnFormSubmit(e);
   } catch (err) {
     console.error(`autoRecordOnFormSubmit でエラー: ${err}`);
   }
 
-  // ▼▼▼【追加】caps側（週次・月次報告エージェント）へ暗号化送信 ▼▼▼
   try {
     if (typeof sendEncryptedFormEventToCaps === 'function') sendEncryptedFormEventToCaps(e);
   } catch (err) {

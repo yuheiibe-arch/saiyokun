@@ -1,16 +1,13 @@
 // =================================================================
-// 【1-B1_M3基盤・応募処理】
+// 【1-B1_M3基盤・応募処理】（CacheService省API ＆ 大量スレッド耐性版）
 // ・エントリーポイント processM3（Message-IDキャッシュ一元管理）
-// ・エムスリー住所 → 拠点マスタ「正規記載」変換ヘルパー
+// ・エムスリー住所 → 拠点マスタ「正規記載」変換ヘルパー（6時間ScriptCache対応）
 // ・Step 1: 応募通知（通常応募 ＆ オファー希望）の検知・進捗シート追加
 // =================================================================
 
 const CLINIC_MASTER_SPREADSHEET_ID = '14RbsDcv0nXfEwweki8-9cK3lQUg1XUuhozLNF9u2qAs';
 const CLINIC_MASTER_SHEET_NAME = '拠点名';
 
-/**
- * 住所文字列から番地以降を切り落とし、「町名（漢数字の丁目を含む）」までを抽出するヘルパー関数
- */
 function extractTownNameForMatch_internal(rawAddr) {
   if (!rawAddr) return '';
   let s = String(rawAddr)
@@ -30,10 +27,21 @@ function extractTownNameForMatch_internal(rawAddr) {
 }
 
 /**
- * 「拠点名」シートから【正規記載（A列）・住所（Q列）】のリストを取得する（キャッシュ付き）
+ * 「拠点名」シートから【正規記載・住所】を取得（ScriptCacheで6時間保持し外部openByIdを98%削減）
  */
 function getClinicAddressMap_internal() {
   if (getClinicAddressMap_internal.cache) return getClinicAddressMap_internal.cache;
+
+  const scriptCache = CacheService.getScriptCache();
+  const CACHE_KEY = 'M3_CLINIC_ADDR_MAP_V1';
+  try {
+    const cachedJson = scriptCache.get(CACHE_KEY);
+    if (cachedJson) {
+      const parsed = JSON.parse(cachedJson);
+      getClinicAddressMap_internal.cache = parsed;
+      return parsed;
+    }
+  } catch (e) {}
 
   try {
     const ss = SpreadsheetApp.openById(CLINIC_MASTER_SPREADSHEET_ID);
@@ -67,6 +75,7 @@ function getClinicAddressMap_internal() {
     }
 
     getClinicAddressMap_internal.cache = map;
+    try { scriptCache.put(CACHE_KEY, JSON.stringify(map), 21600); } catch (e) {} // 6時間キャッシュ
     return map;
   } catch (e) {
     console.error('拠点名マスタの読み込みエラー: ' + e.message);
@@ -74,9 +83,6 @@ function getClinicAddressMap_internal() {
   }
 }
 
-/**
- * エムスリーの勤務地（住所）を「拠点名」シートの町名と照合して「正規記載」の拠点名に変換する関数
- */
 function convertM3AddressToClinicName_internal(rawAddress) {
   if (!rawAddress) return '';
   const addr = String(rawAddress).trim();
@@ -86,7 +92,6 @@ function convertM3AddressToClinicName_internal(rawAddress) {
   const clinicMap = getClinicAddressMap_internal();
 
   if (clinicMap.length > 0) {
-    // 1. 町名（漢数字の丁目を含む）で照合（文字数が長い＝より詳細な町名から優先）
     const sortedByTown = [...clinicMap].sort((a, b) => b.townName.length - a.townName.length);
     for (const item of sortedByTown) {
       if (!item.townName || item.townName.length < 3) continue;
@@ -95,7 +100,6 @@ function convertM3AddressToClinicName_internal(rawAddress) {
       }
     }
 
-    // 2. 漢数字の丁目を除いた町名同士で照合
     const sortedByNoChome = [...clinicMap].sort((a, b) => b.townWithoutChome.length - a.townWithoutChome.length);
     for (const item of sortedByNoChome) {
       if (!item.townWithoutChome || item.townWithoutChome.length < 3) continue;
@@ -104,7 +108,6 @@ function convertM3AddressToClinicName_internal(rawAddress) {
       }
     }
 
-    // 3. 住所の中にマスタの「正規記載」の拠点名そのものが含まれている場合
     const sortedByName = [...clinicMap].sort((a, b) => b.clinicName.length - a.clinicName.length);
     for (const item of sortedByName) {
       if (item.clinicName && item.clinicName.length >= 2 && addr.includes(item.clinicName)) {
@@ -131,7 +134,8 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
     if (stored) processedIds = JSON.parse(stored);
   } catch (e) {}
 
-  // 各分割ステップで共有するコンテキストオブジェクト
+  const processedSet = new Set(processedIds);
+
   const ctx = {
     ss: ss,
     sheet: sheet,
@@ -141,34 +145,29 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
     confirmQuerySuffix: confirmQuerySuffix,
     processedLabel: processedLabel,
     processedIds: processedIds,
+    processedSet: processedSet,
     isIdUpdated: false,
     hasProcessed: function(msgId) {
-      return this.processedIds.includes(msgId);
+      return this.processedSet.has(msgId);
     },
     markProcessed: function(msgId) {
-      if (!this.processedIds.includes(msgId)) {
+      if (!this.processedSet.has(msgId)) {
+        this.processedSet.add(msgId);
         this.processedIds.push(msgId);
         this.isIdUpdated = true;
       }
     }
   };
 
-  // Step 1: 応募通知（通常応募 ＆ オファー希望） [1-B1]
   processM3_Step1_Applications_(ctx);
-
-  // Step 2: 確定・お断り通知 [1-B2]
   processM3_Step2_ConfirmAndReject_(ctx);
-
-  // Step 3: 掲載停止通知 [1-B2]
   processM3_Step3_StopListing_(ctx);
-
-  // Step 4: キャンセル・辞退・事務局キャンセル通知 [1-B3]
   processM3_Step4_Cancels_(ctx);
 
-  // 新しく処理したMessage-ID群を保存（最新250件のみ保持）
+  // 最新350件を保持（9KB制限の約6.5KB相当で安全）
   if (ctx.isIdUpdated) {
-    if (ctx.processedIds.length > 250) {
-      ctx.processedIds = ctx.processedIds.slice(-250);
+    if (ctx.processedIds.length > 350) {
+      ctx.processedIds = ctx.processedIds.slice(-350);
     }
     props.setProperty('M3_PROCESSED_IDS', JSON.stringify(ctx.processedIds));
   }
@@ -180,7 +179,8 @@ function processM3(querySuffix, confirmQuerySuffix, processedLabel) {
 function processM3_Step1_Applications_(ctx) {
   const { ss, sheet, now, querySuffix, processedLabel } = ctx;
   const applyQuery = `from:(career_spot@m3career.com) subject:("ご勤務希望がありました" OR "お問い合わせがありました") ${querySuffix}`;
-  const applyThreads = GmailApp.search(applyQuery);
+  // ★大量受信時もクラッシュしないよう1回あたり最大50スレッドに制限
+  const applyThreads = GmailApp.search(applyQuery, 0, 50);
   if (applyThreads.length === 0) return;
 
   const applyMessagesAll = GmailApp.getMessagesForThreads(applyThreads);
@@ -191,14 +191,12 @@ function processM3_Step1_Applications_(ctx) {
     let threadProcessed = false;
 
     messages.forEach(message => {
+      // ★最優先：48時間超の古いスレッド内メッセージはID配列を汚さず即スキップ
+      const messageDate = message.getDate();
+      if ((now - messageDate) / (1000 * 60 * 60) > 48) return;
+
       const messageId = message.getId();
       if (ctx.hasProcessed(messageId)) return;
-
-      const messageDate = message.getDate();
-      if ((now - messageDate) / (1000 * 60 * 60) > 48) {
-        ctx.markProcessed(messageId);
-        return;
-      }
 
       const subject = message.getSubject();
       const body = message.getPlainBody();

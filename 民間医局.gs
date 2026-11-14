@@ -1,11 +1,12 @@
 // =============================================================
-// 【ファイル4：特定医師（民間医局）対応スクリプト（スレッド統合解析版）】
+// 【ファイル4：特定医師（民間医局）対応スクリプト（スレッド統合解析・省API高速化版）】
 // ★修正済み：テキスト版で消滅する給与情報をHTMLから回収
 // ★修正済み：Chatwork通知から (※要確認) を削除
 // ★修正1：同日複数コマ（午前＋午後など）応募時の時間上書きバグを解消し、日付と時間を完全分離
 // ★修正2：シート記録・通知書き出し時に「日付＋開始時間」の昇順（古い順）で自動ソート
 // ★修正3：テンプレート・署名の法人名を「医療法人社団ナイズ」へ自動統一
-// ★今回修正：A列の医師名に合わせてB列の「宛先」を動的に取得してテンプレートへ反映
+// ★修正4：A列の医師名に合わせてB列の「宛先」を動的に取得してテンプレートへ反映
+// ★今回最適化：getMessagesForThreads による一括取得・検索上限ガード・Set高速照合を導入
 // =============================================================
 
 const SPECIAL_CONFIG = {
@@ -22,7 +23,7 @@ let globalScannerHasRun = false;
 // ★エントリーポイント
 function accumulateSpecialCandidate(ignoredEntryData, ignoredBody) {
   // 1回の実行で何度もスキャンしないようガード
-  if (globalScannerHasRun) return; 
+  if (globalScannerHasRun) return;
   globalScannerHasRun = true;
 
   scanForSalaryEmails();
@@ -54,7 +55,7 @@ function getShiftSortTimestamp_internal(workDateStr, startTimeStr) {
 function scanForSalaryEmails() {
   console.log("=== 民間医局：スレッド統合解析モード開始 ===");
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // 1. 設定・ログ読み込み（A列：医師名、B列：宛先 を取得）
   const settingSheet = ss.getSheetByName(SPECIAL_CONFIG.SETTING_SHEET_NAME);
   if (!settingSheet) return;
@@ -63,7 +64,7 @@ function scanForSalaryEmails() {
 
   const settingRows = settingSheet.getRange(2, 1, lastSettingRow - 1, 2).getValues();
   const defaultRecipient = String(settingRows[0][1] || 'cc-hkt@medical-principle.co.jp').trim();
-  
+
   const targetDoctors = [];
   for (let i = 0; i < settingRows.length; i++) {
     const docName = String(settingRows[i][0] || '').replace(/[\s ]+/g, '');
@@ -76,23 +77,29 @@ function scanForSalaryEmails() {
   if (cachedSpecialUniqueKeys === null) {
     const logSheet = ss.getSheetByName(SPECIAL_CONFIG.LOG_SHEET_NAME);
     if (logSheet && logSheet.getLastRow() > 1) {
-      cachedSpecialUniqueKeys = logSheet.getRange(2, 13, logSheet.getLastRow() - 1, 1).getValues().flat();
+      cachedSpecialUniqueKeys = new Set(
+        logSheet.getRange(2, 13, logSheet.getLastRow() - 1, 1).getValues().flat().map(String)
+      );
     } else {
-      cachedSpecialUniqueKeys = [];
+      cachedSpecialUniqueKeys = new Set();
     }
   }
 
-  // 2. 検索実行（直近2日間 × "掲載日給額"）
+  // 2. 検索実行（直近2日間 × "掲載日給額"、最大50スレッド安全制限）
   const now = new Date();
-  const yesterday = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000); 
+  const yesterday = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
   const afterStr = Utilities.formatDate(yesterday, 'JST', 'yyyy/MM/dd');
-  
-  const query = `after:${afterStr} "掲載日給額"`;
-  const threads = GmailApp.search(query);
-  console.log(`ヒットしたスレッド数: ${threads.length}`);
 
-  threads.forEach(thread => {
-    const messages = thread.getMessages();
+  const query = `after:${afterStr} "掲載日給額"`;
+  const threads = GmailApp.search(query, 0, 50);
+  console.log(`ヒットしたスレッド数: ${threads.length}`);
+  if (threads.length === 0) return;
+
+  // ★API節約：1回のAPIコールで全スレッドのメッセージを一括取得
+  const allMessages = GmailApp.getMessagesForThreads(threads);
+
+  for (let tIdx = 0; tIdx < threads.length; tIdx++) {
+    const messages = allMessages[tIdx];
 
     // =================================================================
     // ▼ STEP 1: スレッド予備調査 (同日複数コマも順番通りに配列で確保) ▼
@@ -111,12 +118,13 @@ function scanForSalaryEmails() {
     const shiftRegex = /(\d{4}年\d{1,2}月\d{1,2}日\s*\([月火水木金土日]\))\s*(\d{1,2}:\d{2}\s*[～~〜\-]\s*\d{1,2}:\d{2})/g;
 
     messages.forEach(msg => {
+      if ((now.getTime() - msg.getDate().getTime()) / (1000 * 60 * 60) > 96) return;
       const b = msg.getPlainBody();
       let m;
       while ((m = shiftRegex.exec(b)) !== null) {
         const dateKey = m[1].replace(/\s+/g, ' ').trim(); // 例: 2026年12月6日 (日)
         const timeStr = m[2].trim(); // 例: 09:00 ～ 13:00
-        
+
         const timeParts = timeStr.match(/(\d{1,2}:\d{2})\s*[～~〜\-]\s*(\d{1,2}:\d{2})/);
         if (timeParts) {
           addTimeToMap(dateKey, timeParts[1], timeParts[2]);
@@ -127,18 +135,20 @@ function scanForSalaryEmails() {
     });
     // =================================================================
 
-
     // ▼ STEP 2: 給与メール(事務局メール)を探して処理 ▼
     messages.forEach(message => {
+      // スレッド内の古い過去メッセージ（72時間超）はスキップして高速化
+      if ((now.getTime() - message.getDate().getTime()) / (1000 * 60 * 60) > 72) return;
+
       let body = message.getPlainBody();
 
       // HTML解析が必要な場合の処理
       if (!body.includes("掲載日給額") && !body.includes("日給")) {
-         const html = message.getBody();
-         body = html.replace(/<br\s*\/?>/gi, '\n')
-                    .replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, '\n')
-                    .replace(/<[^>]+>/g, ' ')
-                    .replace(/&nbsp;/g, ' ');
+        const html = message.getBody();
+        body = html.replace(/<br\s*\/?>/gi, '\n')
+                   .replace(/<\/p>|<\/div>|<\/tr>|<\/li>/gi, '\n')
+                   .replace(/<[^>]+>/g, ' ')
+                   .replace(/&nbsp;/g, ' ');
       }
 
       if (!body.includes("掲載日給額") && !body.includes("日給")) return;
@@ -201,8 +211,8 @@ function scanForSalaryEmails() {
         }
 
         // ▼▼▼【重要修正2】時間の決定ロジック（2コマ応募完全対応） ▼▼▼
-        let startTime = "15:00"; 
-        let endTime = "18:00"; 
+        let startTime = "15:00";
+        let endTime = "18:00";
         let timeSource = "default";
 
         const dateOnlyKey = workDate.split(' ')[0];
@@ -250,7 +260,7 @@ function scanForSalaryEmails() {
             const diffMin = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
             durationStr = `${diffHours}:${('0' + diffMin).slice(-2)}:00`;
           }
-        } catch(e) {}
+        } catch (e) {}
 
         // ★重要修正3：同日の午前・午後2コマが別々に登録されるよう、ユニークキーに時間を含める
         // （過去に旧キーで登録済みの1コマ案件が再通知されないよう、旧キー群もあわせてチェック）
@@ -258,16 +268,16 @@ function scanForSalaryEmails() {
         const legacyKeyClean = `${workDate}_${clinic}_${displayDoctorName}_SALARY_OK`;
         const legacyKeyRaw = `${rawDateLine}_${clinic}_${displayDoctorName}_SALARY_OK`;
 
-        if (cachedSpecialUniqueKeys.includes(uniqueKey) || cachedSpecialUniqueKeys.includes(legacyKeyRaw)) {
+        if (cachedSpecialUniqueKeys.has(uniqueKey) || cachedSpecialUniqueKeys.has(legacyKeyRaw)) {
           continue;
         }
         // 1コマ目かつ旧クリーンキーが既に存在する場合もスキップ
-        if (useIdx === 0 && cachedSpecialUniqueKeys.includes(legacyKeyClean)) {
+        if (useIdx === 0 && cachedSpecialUniqueKeys.has(legacyKeyClean)) {
           continue;
         }
 
         // 登録
-        const commission = Math.floor(salaryRaw * 0.2); 
+        const commission = Math.floor(salaryRaw * 0.2);
         let monthStr = "";
         const mMatch = workDate.match(/(\d{4})年(\d{1,2})月/);
         if (mMatch) monthStr = `${mMatch[1]}/${('00' + mMatch[2]).slice(-2)}`;
@@ -293,11 +303,11 @@ function scanForSalaryEmails() {
         });
 
         if (salaryRaw > 0) {
-          cachedSpecialUniqueKeys.push(uniqueKey);
+          cachedSpecialUniqueKeys.add(uniqueKey);
         }
       }
     });
-  });
+  }
 }
 
 function flushSpecialCandidateNotifications() {
@@ -334,7 +344,7 @@ function flushSpecialCandidateNotifications() {
     logSheet.getRange(startRow, 9, newRows.length, 1).setDataValidation(rule);
     logSheet.getRange(startRow, 12, newRows.length, 1).insertCheckboxes();
   }
-  
+
   // Chatwork通知テンプレートの取得と法人名（「医療法人社団ナイズ」）への自動補正
   let templateRaw = String(settingSheet.getRange(SPECIAL_CONFIG.TEMPLATE_CELL).getValue() || '');
   const updatedTemplate = templateRaw
@@ -350,7 +360,7 @@ function flushSpecialCandidateNotifications() {
   }
 
   const groupedData = {};
-  
+
   specialCandidateBuffer.forEach(data => {
     if (!groupedData[data.doctorName]) groupedData[data.doctorName] = [];
     groupedData[data.doctorName].push(data);
@@ -368,7 +378,7 @@ function flushSpecialCandidateNotifications() {
     list.forEach(item => {
       shiftListText += `----------------------\n`;
       shiftListText += `${item.workDate}\n`;
-      shiftListText += `勤務時間：${item.startTime}-${item.endTime}\n`; 
+      shiftListText += `勤務時間：${item.startTime}-${item.endTime}\n`;
       shiftListText += `【${item.clinic}】\n`;
       shiftListText += `給与：${item.salaryText}\n`;
       shiftListText += `診療科目：${item.department}\n`;
@@ -383,6 +393,7 @@ function flushSpecialCandidateNotifications() {
       .replace('{{SHIFT_LIST}}', shiftListText);
 
     sendToChatwork(SPECIAL_CONFIG.CHATWORK_ROOM_ID, message);
+    Utilities.sleep(1000);
     console.log(`通知完了: ${doctorName} (宛先: ${targetRecipient})`);
   }
   specialCandidateBuffer = [];

@@ -1,12 +1,9 @@
 // =================================================================
-// 【1-C_その他紹介会社処理】
-// エムステージ、MRT（応募・取消し自動処理対応）、民間医局、メディウェル
-// ★修正内容：API制限対策として getMessagesForThreads による一括取得に変更
-// ★修正内容：エムステージ・MRT・民間医局すべてMessage-ID管理に統一し、スレッド巻き込みによるすり抜けを防止
-// ★今回強化：エムステージおよびMRTのキャンセルが「処理済み」移動後に届いた場合も自動で「不採用」に遡及更新
+// 【1-C_その他紹介会社処理】（検索上限ガード ＆ ID押し出し防止版）
+// エムステージ、MRT、民間医局、メディウェル
 // =================================================================
 
-// === エムステージ（スレッド巻き込み防止 ＆ 処理済みシート遡及キャンセル対応）===
+// === エムステージ ===
 function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME_PROGRESS);
@@ -19,11 +16,20 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
     const stored = props.getProperty('MSTAGE_PROCESSED_IDS');
     if (stored) processedIds = JSON.parse(stored);
   } catch (e) {}
+  const processedSet = new Set(processedIds);
   let isIdUpdated = false;
+
+  const markId = (id) => {
+    if (!processedSet.has(id)) {
+      processedSet.add(id);
+      processedIds.push(id);
+      isIdUpdated = true;
+    }
+  };
 
   // === 1. 応募通知の処理 ===
   const applyQuery = `from:(ra@mstage-corp.jp) subject:("貴院の求人に応募がありました") ${querySuffix}`;
-  const applyThreads = GmailApp.search(applyQuery);
+  const applyThreads = GmailApp.search(applyQuery, 0, 50);
 
   if (applyThreads.length > 0) {
     const applyMessagesAll = GmailApp.getMessagesForThreads(applyThreads);
@@ -34,13 +40,12 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
-        const messageId = message.getId();
-        if (processedIds.includes(messageId)) return;
-        processedIds.push(messageId);
-        isIdUpdated = true;
-
         const receivedDate = message.getDate();
         if ((now - receivedDate) / (1000 * 60 * 60) > 48) return;
+
+        const messageId = message.getId();
+        if (processedSet.has(messageId)) return;
+        markId(messageId);
 
         const body = message.getPlainBody();
         const dateLine = extract(body, /勤務日[\s ]*[:：][\s ]*(.+)/);
@@ -72,7 +77,7 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
 
   // === 2. 確定・お断り・キャンセル通知の処理 ===
   const mStageConfirmQuery = `from:(ra@mstage-corp.jp) subject:("勤務が確定" OR "キャンセル" OR "書類選考の結果を通知しました(NG)") ${confirmQuerySuffix}`;
-  const confirmThreads = GmailApp.search(mStageConfirmQuery);
+  const confirmThreads = GmailApp.search(mStageConfirmQuery, 0, 50);
 
   if (confirmThreads.length > 0) {
     const confirmMessagesAll = GmailApp.getMessagesForThreads(confirmThreads);
@@ -85,13 +90,12 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
-        const messageId = message.getId();
-        if (processedIds.includes(messageId)) return;
-        processedIds.push(messageId);
-        isIdUpdated = true;
-
         const receivedDate = message.getDate();
-        if ((now - receivedDate) / (1000 * 60 * 60) > 14 * 24) return;
+        if ((now - receivedDate) / (1000 * 60 * 60) > 72) return;
+
+        const messageId = message.getId();
+        if (processedSet.has(messageId)) return;
+        markId(messageId);
 
         const subject = message.getSubject();
         const body = message.getPlainBody();
@@ -125,7 +129,7 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
         }
 
         if (rowNum !== -1) {
-          let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+          const values = data[rowNum - 1].slice();
           values[8] = type; values[9] = status; values[11] = new Date();
 
           appendRowToArchive(sheet, archiveSheet, values, type === '確定' ? '採用' : '不採用');
@@ -133,7 +137,6 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
 
           threadProcessed = true;
         } else if (type === 'お断り' && jobId && archiveSheet) {
-          // ★追加：既に「処理済み」シートへ移動済みの案件が後からキャンセルになった場合も「不採用」へ更新
           const archData = archiveSheet.getDataRange().getValues();
           for (let j = archData.length - 1; j > 0; j--) {
             const rowAgency = String(archData[j][0]).trim();
@@ -155,12 +158,12 @@ function processMStage(querySuffix, confirmQuerySuffix, processedLabel) {
   }
 
   if (isIdUpdated) {
-    if (processedIds.length > 250) processedIds = processedIds.slice(-250);
+    if (processedIds.length > 300) processedIds = processedIds.slice(-300);
     props.setProperty('MSTAGE_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 }
 
-// === MRT（スレッド巻き込み防止・堅牢化 ＆ 処理済み遡及キャンセル対応版） ===
+// === MRT ===
 function processMRT_Application(querySuffix, processedLabel) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME_PROGRESS);
@@ -173,11 +176,20 @@ function processMRT_Application(querySuffix, processedLabel) {
     const stored = props.getProperty('MRT_PROCESSED_IDS');
     if (stored) processedIds = JSON.parse(stored);
   } catch (e) {}
+  const processedSet = new Set(processedIds);
   let isIdUpdated = false;
+
+  const markId = (id) => {
+    if (!processedSet.has(id)) {
+      processedSet.add(id);
+      processedIds.push(id);
+      isIdUpdated = true;
+    }
+  };
 
   // === 1. 応募通知の処理 ===
   const applyQuery = `subject:("【MRT】") subject:("応募通知") ${querySuffix}`;
-  const applyThreads = GmailApp.search(applyQuery);
+  const applyThreads = GmailApp.search(applyQuery, 0, 50);
 
   if (applyThreads.length > 0) {
     const applyMessagesAll = GmailApp.getMessagesForThreads(applyThreads);
@@ -188,13 +200,12 @@ function processMRT_Application(querySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
-        const messageId = message.getId();
-        if (processedIds.includes(messageId)) return;
-        processedIds.push(messageId);
-        isIdUpdated = true;
-
         const receivedDate = message.getDate();
         if ((now - receivedDate) / (1000 * 60 * 60) > 48) return;
+
+        const messageId = message.getId();
+        if (processedSet.has(messageId)) return;
+        markId(messageId);
 
         const body = message.getPlainBody();
         const dateLine = extract(body, /日時[\s:：]+([^\n\r]+)/);
@@ -221,9 +232,9 @@ function processMRT_Application(querySuffix, processedLabel) {
     }
   }
 
-  // === 2. 応募取消し（キャンセル）の自動処理 ===
-  const mrtCancelQuery = `subject:("【MRT】") subject:("応募取消し") newer_than:14d`;
-  const cancelThreads = GmailApp.search(mrtCancelQuery);
+  // === 2. 応募取消し（キャンセル）の自動処理（★14d全件取得による負荷を3d＋上限50件へ適正化） ===
+  const mrtCancelQuery = `subject:("【MRT】") subject:("応募取消し") newer_than:3d`;
+  const cancelThreads = GmailApp.search(mrtCancelQuery, 0, 50);
 
   if (cancelThreads.length > 0) {
     const cancelMessagesAll = GmailApp.getMessagesForThreads(cancelThreads);
@@ -236,15 +247,15 @@ function processMRT_Application(querySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
+        if ((now - message.getDate()) / (1000 * 60 * 60) > 72) return;
+
         const messageId = message.getId();
-        if (processedIds.includes(messageId)) return;
-        processedIds.push(messageId);
-        isIdUpdated = true;
+        if (processedSet.has(messageId)) return;
+        markId(messageId);
 
         const body = message.getPlainBody();
         const idMatch = body.match(/ID[\s:：]*(\d+)/i);
         const mailJobId = idMatch ? idMatch[1].trim() : "";
-
         if (!mailJobId) return;
 
         const docMatch = body.match(/応募者[\s:：]*([^\n\r]+?)先生/);
@@ -264,9 +275,8 @@ function processMRT_Application(querySuffix, processedLabel) {
         }
 
         if (rowNum !== -1) {
-          let values = sheet.getRange(rowNum, 1, 1, sheet.getLastColumn()).getValues()[0];
+          const values = sheetData[rowNum - 1].slice();
           if (mailDoctorName) values[6] = mailDoctorName;
-
           values[8] = 'お断り';
           values[9] = 'キャンセル済み';
           values[11] = new Date();
@@ -276,7 +286,6 @@ function processMRT_Application(querySuffix, processedLabel) {
 
           threadProcessed = true;
         } else if (archiveSheet) {
-          // ★追加：既に「処理済み」へ移動していた場合も「不採用」へ更新
           const archData = archiveSheet.getDataRange().getValues();
           const cleanMailDoc = mailDoctorName.replace(/[\s ]/g, '');
           for (let j = archData.length - 1; j > 0; j--) {
@@ -299,14 +308,12 @@ function processMRT_Application(querySuffix, processedLabel) {
   }
 
   if (isIdUpdated) {
-    if (processedIds.length > 250) {
-      processedIds = processedIds.slice(-250);
-    }
+    if (processedIds.length > 300) processedIds = processedIds.slice(-300);
     props.setProperty('MRT_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 }
 
-// === 民間医局（識別番号・揺らぎ対応 ＆ スレッド巻き込み防止・Message-ID管理版） ===
+// === 民間医局 ===
 function processMinkanIkyoku_Application(querySuffix, processedLabel) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAME_PROGRESS);
@@ -318,10 +325,11 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
     const stored = props.getProperty('MINKAN_PROCESSED_IDS');
     if (stored) processedIds = JSON.parse(stored);
   } catch (e) {}
+  const processedSet = new Set(processedIds);
   let isIdUpdated = false;
 
   const applyQuery = `subject:("【民間医局ポータル】") subject:("申し込みがありました") ${querySuffix}`;
-  const threads = GmailApp.search(applyQuery);
+  const threads = GmailApp.search(applyQuery, 0, 50);
 
   if (threads.length > 0) {
     const allMessages = GmailApp.getMessagesForThreads(threads);
@@ -332,15 +340,11 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
       let threadProcessed = false;
 
       messages.forEach(message => {
-        const messageId = message.getId();
-        if (processedIds.includes(messageId)) return;
-
         const receivedDate = message.getDate();
-        if ((now - receivedDate) / (1000 * 60 * 60) > 48) {
-          processedIds.push(messageId);
-          isIdUpdated = true;
-          return;
-        }
+        if ((now - receivedDate) / (1000 * 60 * 60) > 48) return;
+
+        const messageId = message.getId();
+        if (processedSet.has(messageId)) return;
 
         const body = message.getPlainBody();
         const doctorName = extract(body, /医師名[\s ]*[:：][\s ]*(.+)/).replace(/[\s ]/g, '');
@@ -362,6 +366,7 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
           ]);
           if (added) threadProcessed = true;
 
+          processedSet.add(messageId);
           processedIds.push(messageId);
           isIdUpdated = true;
         }
@@ -374,9 +379,7 @@ function processMinkanIkyoku_Application(querySuffix, processedLabel) {
   }
 
   if (isIdUpdated) {
-    if (processedIds.length > 250) {
-      processedIds = processedIds.slice(-250);
-    }
+    if (processedIds.length > 300) processedIds = processedIds.slice(-300);
     props.setProperty('MINKAN_PROCESSED_IDS', JSON.stringify(processedIds));
   }
 }
@@ -388,7 +391,7 @@ function processMediwel_Application(querySuffix, processedLabel) {
   const now = new Date();
 
   const applyQuery = `subject:("メディウェル") subject:("応募") -label:${processedLabelName} ${querySuffix}`;
-  const threads = GmailApp.search(applyQuery);
+  const threads = GmailApp.search(applyQuery, 0, 50);
 
   if (threads.length > 0) {
     const allMessages = GmailApp.getMessagesForThreads(threads);

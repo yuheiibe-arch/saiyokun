@@ -1,19 +1,17 @@
 // =================================================================
-// 【1-A_メイン基盤と共通関数】
+// 【1-A_メイン基盤と共通関数】（高速化・省API対応版）
 // 全体の進行管理（大司令塔からの呼び出し）と、共通ヘルパー関数群
 // =================================================================
 
 function onEdit_processProgressSheet(e) {
-  // トリガーオブジェクト(e)がない、または意図しない範囲の場合は即終了
   if (!e || !e.range) return;
   const range = e.range;
   const sheet = e.source.getActiveSheet();
-  
+
   if (sheet.getName() !== SHEET_NAME_PROGRESS) return;
 
   const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
 
-  // 「採用可否」列の編集時の色付け処理
   if (saiyoColIndex > 0 && range.getColumn() === saiyoColIndex) {
     const val = range.getValue();
     if (val === '採用') range.setBackground('#b6d7a8');
@@ -22,21 +20,18 @@ function onEdit_processProgressSheet(e) {
     return;
   }
 
-  // チェックボックス列以外、またはチェックが外された場合は無視
   if (range.getColumn() !== CHECKBOX_COLUMN || String(e.value).toUpperCase() !== "TRUE") return;
 
-  // ★修正ポイント1：データの読み取り前にスプレッドシート全体にロックをかける（連打防止）
   const lock = LockService.getDocumentLock();
   if (!lock.tryLock(2000)) {
-    return; // 2秒待ってもロックが取れない＝既に別クリックが処理中なのでスキップ
+    return;
   }
 
   try {
     const rowIndex = range.getRow();
-    
-    // ロック取得後に、本当にチェックが入っているか再確認（行ズレ対策）
+
     if (sheet.getRange(rowIndex, CHECKBOX_COLUMN).getValue() !== true) {
-      return; 
+      return;
     }
 
     const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -45,23 +40,20 @@ function onEdit_processProgressSheet(e) {
 
     const ui = SpreadsheetApp.getUi();
     const doctorColIndex = getColIndex_internal(sheet, '医師名');
-    
-    // ★修正ポイント2：ロック取得後に初めて行データを取得する（古いデータを抱え込まない）
+
     const rowData = sheet.getRange(rowIndex, 1, 1, sheet.getLastColumn()).getValues()[0];
 
     const agency = String(rowData[0]).trim();
     const saiyoStatus = saiyoColIndex > 0 ? String(rowData[saiyoColIndex - 1]).trim() : '';
     const doctorName = doctorColIndex > 0 ? String(rowData[doctorColIndex - 1]).trim() : '';
-    const jobId = String(rowData[5]).trim(); // F列：識別番号
+    const jobId = String(rowData[5]).trim();
 
-    // ★【追加】紹介会社名の欠落ストッパー
     if (!agency) {
       ui.alert('【エラー】', '「紹介会社」が空欄になっています。\n誤って削除された可能性がありますので、会社名を入力してから再度チェックを入れてください。', ui.ButtonSet.OK);
       sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
       return;
     }
 
-    // エラーチェック
     if (!saiyoStatus) {
       ui.alert('【エラー】', '採用可否が選択されていません。採用または不採用を選択してください。', ui.ButtonSet.OK);
       sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
@@ -78,18 +70,14 @@ function onEdit_processProgressSheet(e) {
       return;
     }
 
-    // ★修正ポイント3：アーカイブシート側の重複チェック（最終防衛線）
-    // 連打などにより既に同じIDが移動済みなら、増殖を防ぐ
     if (jobId) {
       const lastArchRow = archiveSheet.getLastRow();
       if (lastArchRow > 1) {
-        // 処理速度を落とさないよう、直近500件程度を確認
         const startRow = Math.max(2, lastArchRow - 500);
         const numRows = lastArchRow - startRow + 1;
         const archiveIds = archiveSheet.getRange(startRow, 6, numRows, 1).getValues().flat();
-        
+
         if (archiveIds.includes(jobId)) {
-          // 既にアーカイブに存在している場合は、追記せずに元シートから消すだけ
           sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
           safeDeleteRow(sheet, rowIndex);
           return;
@@ -97,14 +85,13 @@ function onEdit_processProgressSheet(e) {
       }
     }
 
-    // 問題なければアーカイブへ移動し、元の行を削除
     sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
     appendRowToArchive(sheet, archiveSheet, rowData, saiyoStatus);
     safeDeleteRow(sheet, rowIndex);
 
   } catch (error) {
     console.error('onEdit 処理エラー: ' + error.toString());
-    try { sheet.getRange(range.getRow(), CHECKBOX_COLUMN).setValue(false); } catch(e){}
+    try { sheet.getRange(range.getRow(), CHECKBOX_COLUMN).setValue(false); } catch (e) {}
   } finally {
     lock.releaseLock();
   }
@@ -112,47 +99,51 @@ function onEdit_processProgressSheet(e) {
 
 function mainProcessEmails_internal() {
   Logger.log("本番処理：メール処理を開始します。");
+  // 実行ごとにメモリキャッシュを初期化
+  mailProcessExistingKeysSet = null;
+  departmentHistoryCacheMap_ = null;
+
   let processedLabel = GmailApp.getUserLabelByName(PROCESSED_LABEL);
   if (!processedLabel) processedLabel = GmailApp.createLabel(PROCESSED_LABEL);
-  
+
   const querySuffix = ` newer_than:1d`;
   const confirmQuerySuffix = ` newer_than:1d`;
 
   try {
     processM3(querySuffix, confirmQuerySuffix, processedLabel);
-  } catch(e) { console.error("M3エラー: " + e.message); }
-  Utilities.sleep(1500);
+  } catch (e) { console.error("M3エラー: " + e.message); }
+  Utilities.sleep(200);
 
   try {
     processMStage(querySuffix, confirmQuerySuffix, processedLabel);
-  } catch(e) { console.error("MStageエラー: " + e.message); }
-  Utilities.sleep(1500);
+  } catch (e) { console.error("MStageエラー: " + e.message); }
+  Utilities.sleep(200);
 
   try {
     processMRT_Application(querySuffix, processedLabel);
-  } catch(e) { console.error("MRTエラー: " + e.message); }
-  Utilities.sleep(1500);
+  } catch (e) { console.error("MRTエラー: " + e.message); }
+  Utilities.sleep(200);
 
   try {
     processMinkanIkyoku_Application(querySuffix, processedLabel);
-  } catch(e) { console.error("民間医局エラー: " + e.message); }
-  Utilities.sleep(1500);
+  } catch (e) { console.error("民間医局エラー: " + e.message); }
+  Utilities.sleep(200);
 
   try {
     processMediwel_Application(querySuffix, processedLabel);
-  } catch(e) { console.error("メディウェルエラー: " + e.message); }
-  Utilities.sleep(1500);
-  
+  } catch (e) { console.error("メディウェルエラー: " + e.message); }
+  Utilities.sleep(200);
+
   try {
     if (typeof checkAtmsEmails_internal === 'function') {
       checkAtmsEmails_internal();
     }
-  } catch(e) { console.error("ATMSエラー: " + e.message); }
-  
+  } catch (e) { console.error("ATMSエラー: " + e.message); }
+
   try {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     sortSheetByDate_internal(ss.getSheetByName(SHEET_NAME_PROGRESS));
-  } catch(e) { console.error("ソートエラー: " + e.message); }
+  } catch (e) { console.error("ソートエラー: " + e.message); }
 
   Logger.log("本番処理：メール処理が完了しました。");
 }
@@ -160,21 +151,21 @@ function mainProcessEmails_internal() {
 function safeDeleteRow(sheet, rowNum) {
   try {
     if (sheet.getMaxRows() <= 2) {
-      sheet.insertRowAfter(1); 
+      sheet.insertRowAfter(1);
     }
     sheet.deleteRow(rowNum);
-  } catch(e) {
+  } catch (e) {
     try {
       sheet.insertRowAfter(1);
       sheet.deleteRow(rowNum);
-    } catch(e2) {
+    } catch (e2) {
       console.error("行の削除に失敗しました (rowNum: " + rowNum + ") - " + e2.message);
     }
   }
 }
 
 // =================================================================
-// 修正版: 重複キーの初期化関数 
+// 高速化版: 重複キーの初期化関数（Utilities.formatDateの数千回呼び出しを排除）
 // =================================================================
 let mailProcessExistingKeysSet = null;
 
@@ -183,54 +174,52 @@ function initExistingKeys(sheet) {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
 
+  const fastDateStr = (val) => {
+    if (val instanceof Date && !isNaN(val.getTime()) && val.getFullYear() > 1900) {
+      return `${val.getFullYear()}/${String(val.getMonth() + 1).padStart(2, '0')}/${String(val.getDate()).padStart(2, '0')}`;
+    }
+    return String(val || '').trim();
+  };
+
   const addDataToSet = (data, isArchive) => {
     for (let i = 1; i < data.length; i++) {
       const agency = String(data[i][0]).trim();
       if (!agency) continue;
-      
-      const dateObj = new Date(data[i][1]);
+
       const clinic = String(data[i][3]).trim();
       const jobId = String(data[i][5]).trim();
       const doctor = String(data[i][6]).split(/[\/／（(]/)[0].replace(/\s/g, '').trim();
-      const status = String(data[i][9]).trim(); // J列: 連携ステータス
+      const status = String(data[i][9]).trim();
 
-      // ★【追加】アーカイブシートにあるデータでも、過去にキャンセルやお断りされたものなら除外
-      // これによりキャンセル枠への別の医師からの再応募がシートに上がってくるようになります
       if (isArchive && (status.includes('キャンセル') || status.includes('お断り'))) {
-         continue; 
+        continue;
       }
 
-      let dateStr = '';
-      if (dateObj instanceof Date && !isNaN(dateObj.getTime()) && dateObj.getFullYear() > 1900) {
-        dateStr = Utilities.formatDate(dateObj, 'JST', 'yyyy/MM/dd');
-      } else {
-        dateStr = String(data[i][1]).trim();
-      }
-
+      const dateStr = fastDateStr(data[i][1]);
       const key = jobId ? `${agency}_${jobId}` : `${agency}_${dateStr}_${clinic}_${doctor}`;
       mailProcessExistingKeysSet.add(key);
     }
   };
 
-  addDataToSet(sheet.getDataRange().getValues(), false); // 進行管理シートは全件重複対象
+  addDataToSet(sheet.getDataRange().getValues(), false);
   if (archiveSheet) {
-    addDataToSet(archiveSheet.getDataRange().getValues(), true); // アーカイブはキャンセル以外を重複対象
+    addDataToSet(archiveSheet.getDataRange().getValues(), true);
   }
 }
 
 function appendRowAndFormatUnique(sheet, rowData) {
   if (!mailProcessExistingKeysSet) initExistingKeys(sheet);
-  
+
   const agency = String(rowData[0]).trim();
   const dateStr = String(rowData[1]).trim();
   const clinic = String(rowData[3]).trim();
   const jobId = String(rowData[5]).trim();
   const doctor = String(rowData[6]).split(/[\/／（(]/)[0].replace(/\s/g, '').trim();
-  
+
   const key = jobId ? `${agency}_${jobId}` : `${agency}_${dateStr}_${clinic}_${doctor}`;
-  
-  if (mailProcessExistingKeysSet.has(key)) return false; 
-  
+
+  if (mailProcessExistingKeysSet.has(key)) return false;
+
   mailProcessExistingKeysSet.add(key);
   appendRowAndFormat(sheet, rowData);
   return true;
@@ -242,15 +231,13 @@ function appendRowAndFormat(sheet, rowData) {
   newRow.setValues([rowData]);
   sheet.getRange(newRowIndex, 2).setHorizontalAlignment('left');
   sheet.getRange(newRowIndex, CHECKBOX_COLUMN).insertCheckboxes();
-  
-  // 「採用可否」列を動的に探してプルダウンを設定
+
   const saiyoColIndex = getColIndex_internal(sheet, '採用可否');
   if (saiyoColIndex > 0) {
     const rule = SpreadsheetApp.newDataValidation().requireValueInList(['採用', '不採用'], true).build();
     sheet.getRange(newRowIndex, saiyoColIndex).setDataValidation(rule);
   }
-  
-  // ★修正：「対応者」列を動的に探し、2行目のセルからデータの入力規則（プルダウン）をコピーする
+
   const taioushaColIndex = getColIndex_internal(sheet, '対応者');
   if (taioushaColIndex > 0) {
     const sourceValidation = sheet.getRange(2, taioushaColIndex).getDataValidation();
@@ -260,10 +247,10 @@ function appendRowAndFormat(sheet, rowData) {
   }
 }
 
-function extract(text, regex) { 
-  if (!text) return ''; 
-  const match = text.match(regex); 
-  return match ? match[1].trim() : ''; 
+function extract(text, regex) {
+  if (!text) return '';
+  const match = text.match(regex);
+  return match ? match[1].trim() : '';
 }
 
 function formatDate(dateString, receivedDate) {
@@ -289,32 +276,40 @@ function formatDate(dateString, receivedDate) {
   return dateString;
 }
 
+// ★高速化：1回の実行中は過去履歴からの診療科辞書をメモリに保持し、4500行の繰り返し読込を防止
+let departmentHistoryCacheMap_ = null;
+
 function findDepartmentFromHistory(ss, doctorName) {
-    if (!doctorName) return '';
-    const nameToFind = doctorName.replace(/\s/g, '');
+  if (!doctorName) return '';
+  const nameToFind = doctorName.replace(/\s/g, '');
+  if (!nameToFind) return '';
+
+  if (!departmentHistoryCacheMap_) {
+    departmentHistoryCacheMap_ = new Map();
     const sheetsToSearch = [ss.getSheetByName(SHEET_NAME_ARCHIVE), ss.getSheetByName(SHEET_NAME_PROGRESS)];
     for (const sheet of sheetsToSearch) {
-        if (sheet) {
-            const data = sheet.getDataRange().getValues();
-            for (let i = data.length - 1; i > 0; i--) {
-                const rowDoctorNameRaw = String(data[i][6]);
-                const rowDoctorNameClean = rowDoctorNameRaw.split(/[\/／（(]/)[0].replace(/\s/g, '');
-                const department = String(data[i][4]);
-                if (rowDoctorNameClean === nameToFind && department) return department;
-            }
+      if (!sheet || sheet.getLastRow() < 2) continue;
+      const data = sheet.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        const docClean = String(data[i][6] || '').split(/[\/／（(]/)[0].replace(/\s/g, '');
+        const dept = String(data[i][4] || '').trim();
+        if (docClean && dept) {
+          departmentHistoryCacheMap_.set(docClean, dept); // 新しい行で上書きされるため最新が保持される
         }
+      }
     }
-    return '';
+  }
+  return departmentHistoryCacheMap_.get(nameToFind) || '';
 }
 
 function extractM3DoctorName(subject) {
-    const namePartWithId = subject.match(/C\d+\s(.+?)先生/);
-    if (namePartWithId && namePartWithId[1]) return namePartWithId[1].trim();
-    const namePartWithoutId = subject.match(/\d+月\d+日\s*(.+?)先生/);
-    if (namePartWithoutId && namePartWithoutId[1]) return namePartWithoutId[1].trim();
-    const namePart = subject.split('先生')[0];
-    const words = namePart.trim().split(/\s+/);
-    return words[words.length - 1];
+  const namePartWithId = subject.match(/C\d+\s(.+?)先生/);
+  if (namePartWithId && namePartWithId[1]) return namePartWithId[1].trim();
+  const namePartWithoutId = subject.match(/\d+月\d+日\s*(.+?)先生/);
+  if (namePartWithoutId && namePartWithoutId[1]) return namePartWithoutId[1].trim();
+  const namePart = subject.split('先生')[0];
+  const words = namePart.trim().split(/\s+/);
+  return words[words.length - 1];
 }
 
 function sortSheetByDate_internal(sheet) {
@@ -322,7 +317,7 @@ function sortSheetByDate_internal(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow > 1) {
     const range = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn());
-    range.sort({column: 2, ascending: true});
+    range.sort({ column: 2, ascending: true });
   }
 }
 
@@ -334,47 +329,40 @@ function getColIndex_internal(sheet, headerName) {
 }
 
 // =================================================================
-// ▼▼▼ 完全動的マッピング版 appendRowToArchive (バグ修正・打刻強化版) ▼▼▼
+// ▼▼▼ 完全動的マッピング版 appendRowToArchive ▼▼▼
 // =================================================================
 function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
   const archHeaders = archiveSheet.getRange(1, 1, 1, archiveSheet.getLastColumn()).getValues()[0];
   const progHeaders = sheet ? sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0] : [];
-  
+
   let archiveData = new Array(archHeaders.length).fill('');
   const nowStr = Utilities.formatDate(new Date(), 'JST', 'yyyy/MM/dd HH:mm:ss');
-  
+
   for (let i = 0; i < archHeaders.length; i++) {
-    const headerName = String(archHeaders[i]).replace(/\s+/g, '').trim(); 
+    const headerName = String(archHeaders[i]).replace(/\s+/g, '').trim();
     if (!headerName) continue;
-    
-    // ★修正1：対応時間の列に確実にタイムスタンプを強制打刻する
+
     if (headerName.includes('対応時間') || headerName.includes('処理時間')) {
       archiveData[i] = nowStr;
       continue;
     }
-    
+
     if (headerName.includes('採用可否')) {
       archiveData[i] = saiyoStatus;
       continue;
     }
 
-    // ★修正2：ヘッダー名の微妙な違い（改行や空白）による抜け落ちを防ぐ
-    let found = false;
     for (let j = 0; j < progHeaders.length; j++) {
       const pHeader = String(progHeaders[j]).replace(/\s+/g, '').trim();
-      
-      // ヘッダーが完全一致するか、「識別番号」というキーワードが含まれていればOKとする
       if (pHeader === headerName || (headerName.includes('識別番号') && pHeader.includes('識別番号'))) {
         if (j < rawValues.length) {
           archiveData[i] = rawValues[j];
         }
-        found = true;
         break;
       }
     }
   }
 
-  // 行を追加
   archiveSheet.appendRow(archiveData);
   const insertedRow = archiveSheet.getLastRow();
   archiveSheet.getRange(insertedRow, 1, 1, archiveSheet.getLastColumn()).setHorizontalAlignment('left');
@@ -384,18 +372,18 @@ function appendRowToArchive(sheet, archiveSheet, rawValues, saiyoStatus) {
     const bgCell = archiveSheet.getRange(insertedRow, archSaiyoColIndex);
     if (saiyoStatus === '採用') bgCell.setBackground('#b6d7a8');
     else if (saiyoStatus === '不採用') bgCell.setBackground('#ffe599');
-    else bgCell.setBackground(null); 
+    else bgCell.setBackground(null);
   }
 
   const dateColIndex = archHeaders.findIndex(h => String(h).includes('勤務希望日')) + 1;
   if (insertedRow > 2 && dateColIndex > 0) {
     const sortRange = archiveSheet.getRange(2, 1, insertedRow - 1, archiveSheet.getLastColumn());
-    sortRange.sort({column: dateColIndex, ascending: true});
+    sortRange.sort({ column: dateColIndex, ascending: true });
   }
 }
 
 // =================================================================
-// ▼▼▼ jinjer勤怠 有給申請メール検知・処理スクリプト ▼▼▼
+// ▼▼▼ jinjer勤怠 有給申請メール検知・処理スクリプト（一括取得＆ID保護版） ▼▼▼
 // =================================================================
 
 function processJinjerPaidLeave_internal() {
@@ -413,7 +401,7 @@ function processJinjerPaidLeave_internal() {
   try {
     const stored = props.getProperty('JINJER_PAIDLEAVE_IDS');
     if (stored) processedIds = JSON.parse(stored);
-  } catch(e) {}
+  } catch (e) {}
 
   const query = `from:entry@kintai.jinjer.biz subject:"【jinjer勤怠】お知らせ_休日休暇申請が提出されました" newer_than:1d`;
   const threads = GmailApp.search(query, 0, 30);
@@ -435,17 +423,23 @@ function processJinjerPaidLeave_internal() {
 
   let isUpdated = false;
   let hasNewRowAdded = false;
+  const now = new Date();
 
-  for (const thread of threads) {
-    const messages = thread.getMessages();
+  // ★API節約：全スレッドのメッセージを1回のAPI通信で一括取得
+  const allMessages = GmailApp.getMessagesForThreads(threads);
+
+  for (let i = 0; i < threads.length; i++) {
+    const messages = allMessages[i];
 
     for (const message of messages) {
+      const receivedDate = message.getDate();
+      // ★48時間より古い過去スレッド内メッセージはID配列を汚さず即スキップ
+      if ((now.getTime() - receivedDate.getTime()) / (1000 * 60 * 60) > 48) continue;
+
       const messageId = message.getId();
-      
       if (processedIds.includes(messageId)) continue;
 
       const body = message.getPlainBody();
-      const receivedDate = message.getDate();
       const receivedDateStr = Utilities.formatDate(receivedDate, 'JST', 'yyyy/MM/dd HH:mm');
 
       const targetDateMatch = body.match(/申請対象日：\s*([^\n\r]+)/);
@@ -455,7 +449,6 @@ function processJinjerPaidLeave_internal() {
       const applicant = applicantMatch ? applicantMatch[1].trim() : '';
 
       if (targetDateRaw && applicant) {
-        // ★修正：既存シートに合わせて「yyyy年MM月dd日」形式に統一（月日を2桁ゼロ埋めすることでソート順も完全保証）
         let formattedTargetDate = targetDateRaw;
         const dMatch = targetDateRaw.match(/(\d{4})[年\/\-](\d{1,2})[月\/\-](\d{1,2})/);
         if (dMatch) {
@@ -470,14 +463,14 @@ function processJinjerPaidLeave_internal() {
 
         const templateRange = sheet.getRange(2, 1, 1, maxCol);
         const targetRange = sheet.getRange(newRowIdx, 1, 1, maxCol);
-        
+
         templateRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_DATA_VALIDATION, false);
         templateRange.copyTo(targetRange, SpreadsheetApp.CopyPasteType.PASTE_FORMAT, false);
 
         sheet.getRange(newRowIdx, colDate).setValue(receivedDateStr);
         sheet.getRange(newRowIdx, colTarget)
-             .setNumberFormat('yyyy"年"mm"月"dd"日"')
-             .setValue(formattedTargetDate);
+          .setNumberFormat('yyyy"年"mm"月"dd"日"')
+          .setValue(formattedTargetDate);
         sheet.getRange(newRowIdx, colName).setValue(applicant);
         sheet.getRange(newRowIdx, colStatus).setValue('未着手');
 
@@ -490,7 +483,6 @@ function processJinjerPaidLeave_internal() {
     }
   }
 
-  // ★追加：新規行が追加された場合、3行目以降（データ領域）を「対象日」の古い順（昇順）に自動ソート
   if (hasNewRowAdded) {
     const lastRow = sheet.getLastRow();
     if (lastRow > 3) {
@@ -501,8 +493,8 @@ function processJinjerPaidLeave_internal() {
   }
 
   if (isUpdated) {
-    if (processedIds.length > 200) {
-      processedIds = processedIds.slice(-200);
+    if (processedIds.length > 250) {
+      processedIds = processedIds.slice(-250);
     }
     props.setProperty('JINJER_PAIDLEAVE_IDS', JSON.stringify(processedIds));
   }
@@ -514,21 +506,20 @@ function onEdit_processPaidLeaveSheet(e) {
   if (!e || !e.range) return;
   const range = e.range;
   const sheet = e.source.getActiveSheet();
-  
-  if (sheet.getName() !== '有給申請') return;
 
+  if (sheet.getName() !== '有給申請') return;
   if (range.getRow() < 3) return;
 
   const statusColIndex = getColIndex_internal(sheet, '対応有無');
-  
+
   if (statusColIndex > 0 && range.getColumn() === statusColIndex) {
     const val = range.getValue();
     const rowRange = sheet.getRange(range.getRow(), 1, 1, sheet.getLastColumn());
-    
+
     if (val === '済') {
-      rowRange.setBackground('#d9d9d9'); // グレーアウト
+      rowRange.setBackground('#d9d9d9');
     } else {
-      rowRange.setBackground(null); // 色をリセット
+      rowRange.setBackground(null);
     }
   }
 }

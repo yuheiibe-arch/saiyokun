@@ -1,12 +1,9 @@
 // ============================================================================
-// 【3-B_キャンセル_メール反映】
-// ・Part 1: 民間医局・MRT キャンセルメールの自動反映（Message-ID管理・列ズレ修正・複数行一括更新）
-// ・Part 2: ドクターサイト「お問い合わせスタッフ送信（キャンセル申請承認）」自動反映（二重保護）
+// 【3-B_キャンセル_メール反映】（長大スレッドID保護 ＆ 省API版）
+// ・Part 1: 民間医局・MRT キャンセルメールの自動反映
+// ・Part 2: ドクターサイト「お問い合わせスタッフ送信（キャンセル申請承認）」自動反映
 // ============================================================================
 
-/**
- * Part 1: 民間医局・MRT のキャンセルメールを検知してシート更新 ＆ Chatwork通知を行う内部関数
- */
 function processMinkanAndMrtCancels_internal_(ss, archiveSheet, progressSheet, colMap, props) {
   const TARGET_CW_ROOM_ID = '415529974';
   const LABEL_NAME = '処理済み-紹介会社キャンセル';
@@ -16,7 +13,16 @@ function processMinkanAndMrtCancels_internal_(ss, archiveSheet, progressSheet, c
     const stored = props.getProperty('AGENCY_CANCEL_PROCESSED_IDS');
     if (stored) agencyProcessedIds = JSON.parse(stored);
   } catch (e) {}
+  const agencyProcessedSet = new Set(agencyProcessedIds);
   let isAgencyIdUpdated = false;
+
+  const markAgencyId = (id) => {
+    if (!agencyProcessedSet.has(id)) {
+      agencyProcessedSet.add(id);
+      agencyProcessedIds.push(id);
+      isAgencyIdUpdated = true;
+    }
+  };
 
   const query = `(subject:"取消のご連絡" OR subject:"【キャンセル】") (from:medical-principle.co.jp OR from:medrt.com OR from:mnys.jp) newer_than:2d`;
   const threads = GmailApp.search(query, 0, 30);
@@ -29,6 +35,7 @@ function processMinkanAndMrtCancels_internal_(ss, archiveSheet, progressSheet, c
   let processedLabel = GmailApp.getUserLabelByName(LABEL_NAME);
   if (!processedLabel) processedLabel = GmailApp.createLabel(LABEL_NAME);
 
+  const now = new Date();
   const allMessages = GmailApp.getMessagesForThreads(threads);
   const processedJobIdsThisRun = new Set();
 
@@ -38,8 +45,11 @@ function processMinkanAndMrtCancels_internal_(ss, archiveSheet, progressSheet, c
     let threadProcessed = false;
 
     for (const message of messages) {
+      // ★72時間超の過去メールはIDリストに入れず即スキップ
+      if ((now - message.getDate()) / (1000 * 60 * 60) > 72) continue;
+
       const msgId = message.getId();
-      if (agencyProcessedIds.includes(msgId)) continue;
+      if (agencyProcessedSet.has(msgId)) continue;
 
       const subject = message.getSubject();
       const body = message.getPlainBody();
@@ -77,19 +87,16 @@ function processMinkanAndMrtCancels_internal_(ss, archiveSheet, progressSheet, c
         if (dateMatch) workDate = dateMatch[1].trim();
         if (timeMatch) workTime = timeMatch[1].trim();
       } else {
-        agencyProcessedIds.push(msgId);
-        isAgencyIdUpdated = true;
+        markAgencyId(msgId);
         continue;
       }
 
-      agencyProcessedIds.push(msgId);
-      isAgencyIdUpdated = true;
+      markAgencyId(msgId);
 
       if (!jobId) continue;
       if (processedJobIdsThisRun.has(jobId)) continue;
       processedJobIdsThisRun.add(jobId);
 
-      // ① 「紹介会社進捗」シートに未処理行があれば「処理済み」へ不採用移動
       let movedFromProgress = false;
       if (progressSheet && progressSheet.getLastRow() > 1) {
         const pData = progressSheet.getDataRange().getValues();
@@ -109,7 +116,6 @@ function processMinkanAndMrtCancels_internal_(ss, archiveSheet, progressSheet, c
         }
       }
 
-      // ② 「処理済み」シート内の全該当行を検索して更新
       const sheetData = archiveSheet.getDataRange().getValues();
       const matchedRows = [];
 
@@ -212,8 +218,7 @@ ${targetRowUrl}
 }
 
 /**
- * Part 2: ドクターサイトの「お問い合わせスタッフ送信」内のキャンセル申請承認メールを走査し、
- * 「処理済み」「紹介会社進捗」の該当採用行を自動で「不採用／キャンセル承認済(システム)」へ更新する内部関数
+ * Part 2: ドクターサイトの「お問い合わせスタッフ送信」内のキャンセル申請承認メール自動反映
  */
 function processSystemApprovedCancels_internal_(archiveSheet, progressSheet, colMap, props, newerThanClause) {
   let sysProcessedIds = [];
@@ -221,19 +226,25 @@ function processSystemApprovedCancels_internal_(archiveSheet, progressSheet, col
     const stored = props.getProperty('SYS_CANCEL_PROCESSED_IDS');
     if (stored) sysProcessedIds = JSON.parse(stored);
   } catch (e) {}
+  const sysProcessedSet = new Set(sysProcessedIds);
   let isSysIdUpdated = false;
 
   const sysQuery = `subject:"お問い合わせスタッフ送信" "のキャンセル申請が承認されました" ${newerThanClause}`;
   const sysThreads = GmailApp.search(sysQuery, 0, 50);
   if (sysThreads.length === 0) return 0;
 
+  const now = new Date();
   const cancelEvents = [];
   const allMsgs = GmailApp.getMessagesForThreads(sysThreads);
 
   for (let i = 0; i < sysThreads.length; i++) {
     for (const msg of allMsgs[i]) {
+      // ★超重要：1スレッド100通の「お問い合わせスタッフ送信」で72時間超の古いメールをID配列に入れない！
+      if ((now - msg.getDate()) / (1000 * 60 * 60) > 72) continue;
+
       const msgId = msg.getId();
-      if (sysProcessedIds.includes(msgId)) continue;
+      if (sysProcessedSet.has(msgId)) continue;
+      sysProcessedSet.add(msgId);
       sysProcessedIds.push(msgId);
       isSysIdUpdated = true;
 
@@ -251,15 +262,12 @@ function processSystemApprovedCancels_internal_(archiveSheet, progressSheet, col
   }
 
   if (isSysIdUpdated) {
-    if (sysProcessedIds.length > 400) sysProcessedIds = sysProcessedIds.slice(-400);
+    if (sysProcessedIds.length > 350) sysProcessedIds = sysProcessedIds.slice(-350);
     props.setProperty('SYS_CANCEL_PROCESSED_IDS', JSON.stringify(sysProcessedIds));
   }
   return updatedCount;
 }
 
-/**
- * 「お問い合わせスタッフ送信」本文から医師名・勤務日・正規拠点・診療科・時間を抽出するヘルパー
- */
 function parseSystemCancelApprovalBody_(body) {
   const docMatch = body.match(/【医師名】[\s ]*[:：][\s ]*([^\r\n]+)/);
   const contentMatch = body.match(/(\d{4}[年\/\-]\d{1,2}[月\/\-]\d{1,2}日?)[\s ]+([^\s ]+)[\s ]+(小児科|内科|[^\s \d]+)?[\s ]*(\d{1,2}:\d{2}\s*[~〜～\-]\s*\d{1,2}:\d{2})?[^\r\n]*?のキャンセル申請が承認されました/);
@@ -275,13 +283,9 @@ function parseSystemCancelApprovalBody_(body) {
   return { dateStr, normClinic: cInfo.formal, deptStr, timeRange, docClean };
 }
 
-/**
- * 抽出したシステム承認キャンセル群を「処理済み」「紹介会社進捗」シートへ一括適用するヘルパー
- */
 function applySystemCancelEventsToSheets_(archiveSheet, progressSheet, colMap, cancelEvents) {
   let updatedCount = 0;
 
-  // 1. 「紹介会社進捗」シートにあれば不採用としてアーカイブへ移動
   if (progressSheet && progressSheet.getLastRow() > 1) {
     const pData = progressSheet.getDataRange().getValues();
     for (let r = pData.length - 1; r >= 1; r--) {
@@ -315,7 +319,6 @@ function applySystemCancelEventsToSheets_(archiveSheet, progressSheet, colMap, c
     }
   }
 
-  // 2. 「処理済み」シートで「採用」のまま残っている該当行を「不採用」に更新
   if (archiveSheet.getLastRow() > 1) {
     const aData = archiveSheet.getDataRange().getValues();
     for (let r = 1; r < aData.length; r++) {
