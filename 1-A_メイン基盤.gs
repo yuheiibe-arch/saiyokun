@@ -1,5 +1,5 @@
 // =================================================================
-// 【1-A_メイン基盤と共通関数】（高速化・省API対応版）
+// 【1-A_メイン基盤と共通関数】（高速化・省API・使い回しID再応募対応版）
 // 全体の進行管理（大司令塔からの呼び出し）と、共通ヘルパー関数群
 // =================================================================
 
@@ -70,14 +70,31 @@ function onEdit_processProgressSheet(e) {
       return;
     }
 
-    if (jobId) {
+    // ★修正：キャンセル後の案件番号(jobId)使い回し・再応募に対応
+    // 「処理済み」シートに同じjobIdが存在しても、それが「不採用（キャンセル等）」であれば重複とみなさず新規転記を通す。
+    // （自動確定メール等で既に有効な「採用」行として転記済みの場合のみ、二重転記防止でスキップ削除する）
+    if (jobId && saiyoStatus === '採用') {
       const lastArchRow = archiveSheet.getLastRow();
       if (lastArchRow > 1) {
-        const startRow = Math.max(2, lastArchRow - 500);
-        const numRows = lastArchRow - startRow + 1;
-        const archiveIds = archiveSheet.getRange(startRow, 6, numRows, 1).getValues().flat();
+        const archSaiyoCol = getColIndex_internal(archiveSheet, '採用可否');
+        const archStatusCol = getColIndex_internal(archiveSheet, '処理状況');
+        const archData = archiveSheet.getDataRange().getValues();
 
-        if (archiveIds.includes(jobId)) {
+        const hasActiveAdoptedRecord = archData.slice(1).some(r => {
+          const rJobId = String(r[5] || '').trim();
+          if (rJobId !== jobId) return false;
+
+          const rSaiyo = archSaiyoCol > 0 ? String(r[archSaiyoCol - 1] || '').trim() : '';
+          const rStatus = archStatusCol > 0 ? String(r[archStatusCol - 1] || '').trim() : String(r[9] || '').trim();
+
+          if (rSaiyo !== '採用') return false;
+          if (rStatus.includes('キャンセル') || rStatus.includes('お断り') || rStatus.includes('掲載停止') || rStatus.includes('旧行')) {
+            return false;
+          }
+          return true;
+        });
+
+        if (hasActiveAdoptedRecord) {
           sheet.getRange(rowIndex, CHECKBOX_COLUMN).setValue(false);
           safeDeleteRow(sheet, rowIndex);
           return;
@@ -165,7 +182,7 @@ function safeDeleteRow(sheet, rowNum) {
 }
 
 // =================================================================
-// 高速化版: 重複キーの初期化関数（Utilities.formatDateの数千回呼び出しを排除）
+// 高速化版: 重複キーの初期化関数（使い回しIDの再応募取り込みにも対応）
 // =================================================================
 let mailProcessExistingKeysSet = null;
 
@@ -173,6 +190,7 @@ function initExistingKeys(sheet) {
   mailProcessExistingKeysSet = new Set();
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const archiveSheet = ss.getSheetByName(SHEET_NAME_ARCHIVE);
+  const archSaiyoCol = archiveSheet ? getColIndex_internal(archiveSheet, '採用可否') : -1;
 
   const fastDateStr = (val) => {
     if (val instanceof Date && !isNaN(val.getTime()) && val.getFullYear() > 1900) {
@@ -191,8 +209,12 @@ function initExistingKeys(sheet) {
       const doctor = String(data[i][6]).split(/[\/／（(]/)[0].replace(/\s/g, '').trim();
       const status = String(data[i][9]).trim();
 
-      if (isArchive && (status.includes('キャンセル') || status.includes('お断り'))) {
-        continue;
+      if (isArchive) {
+        const saiyo = archSaiyoCol > 0 ? String(data[i][archSaiyoCol - 1] || '').trim() : '';
+        // ★修正：キャンセル・お断り・不採用になっている過去行は除外し、同一案件番号の使い回し再応募を取り込めるようにする
+        if (saiyo === '不採用' || status.includes('キャンセル') || status.includes('お断り') || status.includes('掲載停止') || status.includes('旧行')) {
+          continue;
+        }
       }
 
       const dateStr = fastDateStr(data[i][1]);
@@ -276,7 +298,7 @@ function formatDate(dateString, receivedDate) {
   return dateString;
 }
 
-// ★高速化：1回の実行中は過去履歴からの診療科辞書をメモリに保持し、4500行の繰り返し読込を防止
+// 1回の実行中は過去履歴からの診療科辞書をメモリに保持し、繰り返し読込を防止
 let departmentHistoryCacheMap_ = null;
 
 function findDepartmentFromHistory(ss, doctorName) {
@@ -294,7 +316,7 @@ function findDepartmentFromHistory(ss, doctorName) {
         const docClean = String(data[i][6] || '').split(/[\/／（(]/)[0].replace(/\s/g, '');
         const dept = String(data[i][4] || '').trim();
         if (docClean && dept) {
-          departmentHistoryCacheMap_.set(docClean, dept); // 新しい行で上書きされるため最新が保持される
+          departmentHistoryCacheMap_.set(docClean, dept);
         }
       }
     }
@@ -425,7 +447,6 @@ function processJinjerPaidLeave_internal() {
   let hasNewRowAdded = false;
   const now = new Date();
 
-  // ★API節約：全スレッドのメッセージを1回のAPI通信で一括取得
   const allMessages = GmailApp.getMessagesForThreads(threads);
 
   for (let i = 0; i < threads.length; i++) {
@@ -433,7 +454,6 @@ function processJinjerPaidLeave_internal() {
 
     for (const message of messages) {
       const receivedDate = message.getDate();
-      // ★48時間より古い過去スレッド内メッセージはID配列を汚さず即スキップ
       if ((now.getTime() - receivedDate.getTime()) / (1000 * 60 * 60) > 48) continue;
 
       const messageId = message.getId();
