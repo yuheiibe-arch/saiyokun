@@ -65,3 +65,6 @@ const DOTAKYAN_CHATWORK_ROOM_ID = '415529974';
 const PERSONAL_MAIL_CHATWORK_ROOM_ID = '434845563'; 
 const PROCESSED_LABEL_PERSONAL = '処理済み-個人連絡';
 const LOG_SHEET_NAME_PERSONAL = '個人メールログ';
+
+// --- 9. 次回即決アーカイブ（不採用報告・掘り起こし用） ---
+const NEXT_SOKKETSU_SHEET_NAME = '次回即決アーカイブ';

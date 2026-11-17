@@ -167,4 +167,10 @@ function onFormSubmit_Master(e) {
   } catch (err) {
     console.error(`sendEncryptedFormEventToCaps でエラー: ${err}`);
   }
+
+  try {
+    if (typeof autoArchiveNextSokketsuOnFormSubmit === 'function') autoArchiveNextSokketsuOnFormSubmit(e);
+  } catch (err) {
+    console.error(`autoArchiveNextSokketsuOnFormSubmit でエラー: ${err}`);
+  }
 }

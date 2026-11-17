@@ -1,6 +1,7 @@
 // =============================================================
 // 【ファイル2：フォーム・URL処理用スクリプト】
 // ※こだわりの書式そのままの完全復元版（タグ重複・担当者重複修正済）
+// ★追加：不採用報告の「今後の採用判断」出力 ＆ 不採用シートの診療科列名対応
 // =============================================================
 
 /**
@@ -118,7 +119,24 @@ function createSaiyoChatMessage(values, fileInfoBlock, submitterName) {
   const gakurekiFormatted = formatHistoryText(gakurekiRaw);
   const shimeiRaw = getValue(values, '氏名');
   const shimeiFormatted = shimeiRaw.endsWith('先生') ? shimeiRaw : `${shimeiRaw}先生`;
-  const mainInfo = [ `【${getValue(values, '拠点')}／${getValue(values, '診療科')}】${kinmu_date} ${jikanBlock}`, `紹介会社：${getValue(values, '紹介会社')}`, `氏名：${shimeiFormatted}`, `性別：${getValue(values, '性別')}`, `①65歳以下⇒${getValue(values, '年齢')}歳`, `②診療科の一致⇒${getValue(values, '診療科')}`, `③クレーム歴なし⇒${getValue(values, '紹介元でのクレーム歴')} ${getValue(values, '勤務状況の詳細（任意）クレームなど懸念事項')}`.trim(), `④当法人で勤務歴⇒${getValue(values, '当法人での勤務歴')} ${getValue(values, '勤務歴の詳細（任意）')} ${getValue(values, '勤務歴等補足があれば')}`.trim(), `専門科目：${getValue(values, '専門科目')}`, `学歴・職歴：`, `${gakurekiFormatted}` ].join('\n');
+  // ★補強：不採用フォームの列名「応募先の診療科（キャップスクリニックの診療科）」にも対応
+  const shinryoka = getValue(values, '診療科') || getValue(values, '応募先の診療科（キャップスクリニックの診療科）');
+  const concernDetail = getValue(values, '勤務状況の詳細（任意）クレームなど懸念事項') || getValue(values, '勤務状況の詳細（任意）');
+
+  const mainInfo = [
+    `【${getValue(values, '拠点')}／${shinryoka}】${kinmu_date} ${jikanBlock}`,
+    `紹介会社：${getValue(values, '紹介会社')}`,
+    `氏名：${shimeiFormatted}`,
+    `性別：${getValue(values, '性別')}`,
+    `①65歳以下⇒${getValue(values, '年齢')}歳`,
+    `②診療科の一致⇒${shinryoka}`,
+    `③クレーム歴なし⇒${getValue(values, '紹介元でのクレーム歴')} ${concernDetail}`.trim(),
+    `④当法人で勤務歴⇒${getValue(values, '当法人での勤務歴')} ${getValue(values, '勤務歴の詳細（任意）')} ${getValue(values, '勤務歴等補足があれば')}`.trim(),
+    `専門科目：${getValue(values, '専門科目')}`,
+    `学歴・職歴：`,
+    `${gakurekiFormatted}`
+  ].join('\n');
+
   // ★修正：「担当：」に統一（二重出力防止＆Slackタイトル横変換との完全連動）
   const tantoSha = submitterName ? `担当：${submitterName}` : '';
   const bodyParts = [ '〈採用報告〉', tantoSha, `[info]${mainInfo}[/info]`, getValue(values, '参考URL（勤務先etc）'), getValue(values, '所感・申し送り事項'), fileInfoBlock ];
@@ -128,9 +146,15 @@ function createSaiyoChatMessage(values, fileInfoBlock, submitterName) {
 function createFusaiyoChatMessage(values, fileInfoBlock, submitterName) {
   const baseMessage = createSaiyoChatMessage(values, fileInfoBlock, submitterName);
   const fusaiyoRiyuu = getValue(values, '不採用理由') || getValue(values, '【不採用理由】');
+  const nextJudgment = getValue(values, '今後の採用判断');
   let finalMessage = baseMessage.replace('〈採用報告〉', '〈不採用報告〉');
-  if (fusaiyoRiyuu) {
-    finalMessage += `\n\n[hr]不採用理由：\n${fusaiyoRiyuu}`;
+
+  const footerLines = [];
+  if (fusaiyoRiyuu) footerLines.push(`不採用理由：\n${fusaiyoRiyuu}`);
+  if (nextJudgment) footerLines.push(`今後の採用判断：${nextJudgment}`);
+
+  if (footerLines.length > 0) {
+    finalMessage += `\n\n[hr]${footerLines.join('\n\n')}`;
   }
   return finalMessage;
 }
@@ -164,6 +188,7 @@ function createDsChatMessage(values, fileInfoBlock, submitterName) {
   const bodyParts = [ '〈DS承認報告〉', tantoSha, summaryBlock, detailsBlock, hrBlock, nextActionBlock, getValue(values, '参考URL（勤務先etc）'), keirekiBlock, getValue(values, '所感・申し送り事項'), fileInfoBlock ];
   return bodyParts.filter(String).join('\n\n');
 }
+
 // ※必要な場合のみ「メール処理.gs」の末尾に追加
 function onEdit_processUrlSheet(e) {
   if (!e || !e.range) return;
